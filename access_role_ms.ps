@@ -1,0 +1,129 @@
+# Prérequis :
+# 1. Installer Azure CLI : https://learn.microsoft.com/cli/azure/install-azure-cli
+# 2. Installer ImportExcel : Install-Module -Name ImportExcel -Scope CurrentUser
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+
+Import-Module ImportExcel
+
+# Connexion (inutile si ta session est déjà authentifiée)
+# az login --tenant 495929eb-f078-464d-b6ef-e9fe18c31e12
+
+# Récupérer tous les abonnements
+$subscriptions = az account list --query "[].{Name:name, Id:id}" -o json | ConvertFrom-Json
+
+$results = @()
+$allResources = @()
+
+foreach ($sub in $subscriptions) {
+    Write-Host "🔎 Traitement abonnement : $($sub.Name)" -ForegroundColor Cyan
+    az account set --subscription $sub.Id
+
+    # 1️⃣ Rôles au niveau de l’abonnement
+    $subScope = "/subscriptions/$($sub.Id)"
+    $subRoles = az role assignment list --scope $subScope -o json | ConvertFrom-Json
+    foreach ($role in $subRoles) {
+        $results += [PSCustomObject]@{
+            Subscription   = $sub.Name
+            ResourceGroup  = ""
+            ResourceName   = "SUBSCRIPTION_SCOPE"
+            ResourceType   = "Subscription"
+            PrincipalId    = $role.principalId
+            PrincipalName  = $role.principalName
+            Role           = $role.roleDefinitionName
+            PrincipalType  = $role.principalType
+        }
+    }
+
+    # Récupérer toutes les ressources de l'abonnement
+    $resources = az resource list -o json | ConvertFrom-Json
+    $allResources += $resources
+
+    foreach ($res in $resources) {
+        # 2️⃣ Rôles au niveau du resource group
+        $rgScope = "/subscriptions/$($sub.Id)/resourceGroups/$($res.resourceGroup)"
+        $rgRoles = az role assignment list --scope $rgScope -o json | ConvertFrom-Json
+        foreach ($role in $rgRoles) {
+            $results += [PSCustomObject]@{
+                Subscription   = $sub.Name
+                ResourceGroup  = $res.resourceGroup
+                ResourceName   = "RESOURCE_GROUP_SCOPE"
+                ResourceType   = "ResourceGroup"
+                PrincipalId    = $role.principalId
+                PrincipalName  = $role.principalName
+                Role           = $role.roleDefinitionName
+                PrincipalType  = $role.principalType
+            }
+        }
+
+        # 3️⃣ Rôles au niveau de la ressource
+        $resRoles = az role assignment list --scope $res.id -o json | ConvertFrom-Json
+        foreach ($role in $resRoles) {
+            $results += [PSCustomObject]@{
+                Subscription   = $sub.Name
+                ResourceGroup  = $res.resourceGroup
+                ResourceName   = $res.name
+                ResourceType   = $res.type
+                PrincipalId    = $role.principalId
+                PrincipalName  = $role.principalName
+                Role           = $role.roleDefinitionName
+                PrincipalType  = $role.principalType
+            }
+        }
+    }
+}
+
+# Récupérer les groupes Entra ID et membres
+$groups = az ad group list -o json | ConvertFrom-Json
+
+$groupMemberships = foreach ($grp in $groups) {
+    $members = az ad group member list --group $grp.id -o json | ConvertFrom-Json
+    foreach ($m in $members) {
+        [PSCustomObject]@{
+            GroupName = $grp.displayName
+            ObjectId  = $m.id
+        }
+    }
+}
+
+# Construire la matrice Ressources ↔ Groupes
+$matrix = foreach ($r in $results) {
+    $userGroups = $groupMemberships | Where-Object { $_.ObjectId -eq $r.PrincipalId } |
+                  Select-Object -ExpandProperty GroupName -Unique
+
+    [PSCustomObject]@{
+        Subscription  = $r.Subscription
+        ResourceGroup = $r.ResourceGroup
+        ResourceName  = $r.ResourceName
+        ResourceType  = $r.ResourceType
+        Role          = $r.Role
+        Principal     = $r.PrincipalName
+        Groups        = ($userGroups -join ", ")
+    }
+}
+
+# 🔎 Identifier les ressources sans rôles associés
+$resourcesWithRoles = $results | Where-Object { $_.ResourceType -ne "Subscription" -and $_.ResourceType -ne "ResourceGroup" } | Select-Object -ExpandProperty ResourceName -Unique
+
+$resourcesNoRoles = foreach ($res in $allResources) {
+    if ($resourcesWithRoles -notcontains $res.name) {
+        [PSCustomObject]@{
+            Subscription  = $sub.Id               # ✅ correction ici
+            ResourceGroup = $res.resourceGroup
+            ResourceName  = $res.name
+            ResourceType  = $res.type
+        }
+    }
+}
+
+# Vérification rapide
+Write-Host "✅ Nombre d’entrées dans la matrice : $($matrix.Count)"
+Write-Host "⚠️ Nombre de ressources sans rôles : $($resourcesNoRoles.Count)"
+
+# Exporter en Excel avec 2 feuilles
+$excelPath = "C:\Users\Marc\Azure_Access_Matrix.xlsx"
+Remove-Item $excelPath -ErrorAction SilentlyContinue
+
+$matrix | Export-Excel -Path $excelPath -WorksheetName "AccessMatrix" -AutoSize -BoldTopRow -FreezeTopRow -Title "Azure Access Matrix"
+$resourcesNoRoles | Export-Excel -Path $excelPath -WorksheetName "NoRoleAssignments" -AutoSize -BoldTopRow -FreezeTopRow -Append
+
+Write-Host "✅ Matrice générée avec 2 feuilles : $excelPath" -ForegroundColor Green
