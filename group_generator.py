@@ -1024,7 +1024,7 @@ def build_visio_page(env, env_df):
         shape_id += 1
         return shape_id - 1
 
-    def rect_shape(pin_x, pin_y, width, height, text, fill, stroke="#004c99", font_size=10, bold=False, rounding=0.15):
+    def rect_shape(pin_x, pin_y, width, height, text, fill, stroke="#004c99", font_size=10, bold=False, rounding=0.15, stroke_weight=0.02):
         return {
             "type": "rect",
             "pin_x": pin_x,
@@ -1037,6 +1037,7 @@ def build_visio_page(env, env_df):
             "font_size": font_size,
             "bold": bold,
             "rounding": rounding,
+            "stroke_weight": stroke_weight,
         }
 
     def line_shape(pin_x, pin_y, width, text="", stroke="#004c99", arrow=True, line_weight=0.07):
@@ -1101,10 +1102,11 @@ def build_visio_page(env, env_df):
             width=page_width - 1.0,
             height=block_height,
             text="",
-            fill="#f9fbff",
-            stroke="#c7d2eb",
+            fill="#f4f7ff",
+            stroke="#7fa1d9",
             font_size=8,
             rounding=0.25,
+            stroke_weight=0.05,
         )
         add_shape(lane_shape)
 
@@ -1119,6 +1121,7 @@ def build_visio_page(env, env_df):
             stroke="#0050ef",
             font_size=13,
             bold=True,
+            stroke_weight=0.04,
         )
         persona_id = add_shape(persona_shape)
 
@@ -1133,6 +1136,7 @@ def build_visio_page(env, env_df):
             stroke="#004c99",
             font_size=13,
             bold=True,
+            stroke_weight=0.04,
         )
         grt_id = add_shape(grt_shape)
 
@@ -1165,7 +1169,7 @@ def build_visio_page(env, env_df):
             is_pim = "PIM" in criticity or any(r.strip() in PIM_REQUIRED for r in row["Rôle"].split(","))
             role_text = f"{category}\n{role_label}"
             if is_pim and "(PIM)" not in role_text:
-                role_text += "\n(PIM)"
+                role_text += "\nPIM REQUIS"
 
             sr_shape = rect_shape(
                 pin_x=columns["sr"]["x"],
@@ -1176,11 +1180,12 @@ def build_visio_page(env, env_df):
                 fill="#f6f9ff",
                 stroke="#004c99",
                 font_size=12,
+                stroke_weight=0.03,
             )
             add_shape(sr_shape)
 
             icon_fill = CATEGORY_COLOR.get(category, "#f2f2f2")
-            icon_label = CATEGORY_ABBR.get(category, category[:3]).upper()
+            icon_label = category.replace("_", " ").upper()
             icon_shape = rect_shape(
                 pin_x=columns["resource"]["x"],
                 pin_y=row_y + 0.2,
@@ -1207,6 +1212,8 @@ def build_visio_page(env, env_df):
             add_shape(resource_text_shape)
 
             crit_color = CRIT_COLORS.get(criticity, "#ffffff")
+            if is_pim:
+                crit_color = "#ffd6d6"
             role_shape = rect_shape(
                 pin_x=columns["role"]["x"],
                 pin_y=row_y,
@@ -1216,6 +1223,7 @@ def build_visio_page(env, env_df):
                 fill=crit_color,
                 stroke="#333333",
                 font_size=11,
+                stroke_weight=0.03,
             )
             add_shape(role_shape)
 
@@ -1345,6 +1353,9 @@ def shape_to_element(shape):
         add_cell("FillForegnd", visio_color(shape.get("fill", "#ffffff")))
         add_cell("FillPattern", 31)
         add_cell("Rounding", shape.get("rounding", 0))
+        stroke_weight = shape.get("stroke_weight")
+        if stroke_weight:
+            add_cell("LineWeight", stroke_weight)
 
     text_value = sanitize_visio_text(shape.get("text", ""))
     if text_value:
