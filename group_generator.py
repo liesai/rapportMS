@@ -47,6 +47,35 @@ CATEGORY_COLOR = {
     "global": "#D0D6E3",         # Global (gris Azure)
 }
 
+# Références : Microsoft Well-Architected "Architecture design diagrams"
+# https://learn.microsoft.com/en-us/azure/well-architected/architect-role/design-diagrams
+CATEGORY_DISPLAY_LABELS = {
+    "synapse": "Azure Synapse Analytics",
+    "sql_db": "Azure SQL Database",
+    "sql_rbac": "Azure SQL Server",
+    "storage_data": "Azure Storage Data Plane",
+    "storage_mgmt": "Azure Storage Management",
+    "ml": "Azure Machine Learning",
+    "monitoring": "Azure Monitor / Log Analytics",
+    "network": "Azure Virtual Network",
+    "functions": "Azure Functions",
+    "security": "Microsoft Defender for Cloud",
+    "global": "Azure Subscription",
+    "eventhub": "Azure Event Hubs",
+    "datafactory": "Azure Data Factory",
+}
+
+AZURE_BRAND_COLORS = {
+    "persona_border": "#0078D4",
+    "persona_fill": "#EDF7FF",
+    "section_border": "#5B8DEF",
+    "section_fill": "#F5F8FF",
+    "st_border": "#004C99",
+    "st_fill": "#E6F2FF",
+    "sr_border": "#106EBE",
+    "sr_fill": "#F6F9FF",
+}
+
 # ===========================================
 #   SHAPES OFFICIELS AZURE POUR DRAW.IO
 #   (palette "Azure 2023" de diagrams.net)
@@ -1084,8 +1113,8 @@ def build_visio_page(env, env_df):
             width=col["width"],
             height=column_header_height,
             text=format_caps(col["label"]),
-            fill="#edf2ff",
-            stroke="#8aa5d9",
+            fill=AZURE_BRAND_COLORS["section_fill"],
+            stroke=AZURE_BRAND_COLORS["section_border"],
             font_size=11,
             bold=True,
         )
@@ -1102,8 +1131,8 @@ def build_visio_page(env, env_df):
             width=page_width - 1.0,
             height=block_height,
             text="",
-            fill="#f4f7ff",
-            stroke="#7fa1d9",
+            fill=AZURE_BRAND_COLORS["section_fill"],
+            stroke=AZURE_BRAND_COLORS["section_border"],
             font_size=8,
             rounding=0.25,
             stroke_weight=0.05,
@@ -1117,8 +1146,8 @@ def build_visio_page(env, env_df):
             width=columns["persona"]["width"],
             height=0.9,
             text=format_caps(f"Persona: {persona}"),
-            fill="#edf7ff",
-            stroke="#0050ef",
+            fill=AZURE_BRAND_COLORS["persona_fill"],
+            stroke=AZURE_BRAND_COLORS["persona_border"],
             font_size=13,
             bold=True,
             stroke_weight=0.04,
@@ -1132,8 +1161,8 @@ def build_visio_page(env, env_df):
             width=columns["grt"]["width"],
             height=0.9,
             text=format_caps(f"ST : {grt_value}"),
-            fill="#e6f2ff",
-            stroke="#004c99",
+            fill=AZURE_BRAND_COLORS["st_fill"],
+            stroke=AZURE_BRAND_COLORS["st_border"],
             font_size=13,
             bold=True,
             stroke_weight=0.04,
@@ -1145,7 +1174,7 @@ def build_visio_page(env, env_df):
             pin_x=columns["persona"]["x"] + (columns["persona"]["width"] / 2) + link_len / 2,
             pin_y=persona_center,
             width=link_len,
-            stroke="#0050ef",
+            stroke=AZURE_BRAND_COLORS["persona_border"],
             line_weight=0.08,
         )
         add_shape(persona_link)
@@ -1154,8 +1183,8 @@ def build_visio_page(env, env_df):
             pin_y=persona_center,
             width=0.35,
             height=0.25,
-            fill="#0050ef",
-            stroke="#0050ef",
+            fill=AZURE_BRAND_COLORS["persona_border"],
+            stroke=AZURE_BRAND_COLORS["persona_border"],
         )
         add_shape(persona_arrow)
 
@@ -1167,7 +1196,8 @@ def build_visio_page(env, env_df):
             role_label = row["Rôle"].replace(",", "\n")
             criticity = row["Criticité"]
             is_pim = "PIM" in criticity or any(r.strip() in PIM_REQUIRED for r in row["Rôle"].split(","))
-            role_text = f"{category}\n{role_label}"
+            resource_label = CATEGORY_DISPLAY_LABELS.get(category, category.replace("_", " ").title())
+            role_text = f"{resource_label}\n{role_label}"
             if is_pim and "(PIM)" not in role_text:
                 role_text += "\nPIM REQUIS"
 
@@ -1177,21 +1207,21 @@ def build_visio_page(env, env_df):
                 width=columns["sr"]["width"],
                 height=0.85,
                 text=format_caps(f"SR : {grr}"),
-                fill="#f6f9ff",
-                stroke="#004c99",
+                fill=AZURE_BRAND_COLORS["sr_fill"],
+                stroke=AZURE_BRAND_COLORS["sr_border"],
                 font_size=12,
                 stroke_weight=0.03,
             )
             add_shape(sr_shape)
 
             icon_fill = CATEGORY_COLOR.get(category, "#f2f2f2")
-            icon_label = category.replace("_", " ").upper()
+            icon_label = resource_label
             icon_shape = rect_shape(
                 pin_x=columns["resource"]["x"],
                 pin_y=row_y + 0.2,
                 width=1.0,
                 height=1.0,
-                text=format_caps(icon_label),
+                text=icon_label,
                 fill=icon_fill,
                 stroke="#1e1e1e",
                 font_size=12,
@@ -1204,7 +1234,7 @@ def build_visio_page(env, env_df):
                 pin_y=row_y - 0.6,
                 width=columns["resource"]["width"],
                 height=0.4,
-                text=format_caps(category.replace("_", " ")),
+                text=resource_label,
                 fill="#ffffff",
                 stroke="#ffffff",
                 font_size=10,
@@ -1232,15 +1262,15 @@ def build_visio_page(env, env_df):
                 pin_x=columns["grt"]["x"] + (columns["grt"]["width"] / 2) + link_sr / 2,
                 pin_y=row_y,
                 width=link_sr,
-                stroke="#004c99",
+                stroke=AZURE_BRAND_COLORS["st_border"],
                 line_weight=0.07,
             )
             add_shape(sr_link)
             sr_arrow = arrow_shape(
                 pin_x=columns["sr"]["x"] - columns["sr"]["width"] / 2 - 0.15,
                 pin_y=row_y,
-                fill="#004c99",
-                stroke="#004c99",
+                fill=AZURE_BRAND_COLORS["st_border"],
+                stroke=AZURE_BRAND_COLORS["st_border"],
             )
             add_shape(sr_arrow)
 
