@@ -976,31 +976,45 @@ def sanitize_visio_text(text):
 
 
 def build_visio_page(env, env_df):
-    personas = []
+    personas_info = []
+    lane_padding = 0.45
+    header_height = 1.05
+    row_gap = 1.3
+    row_height = 0.9
+    lane_gap = 0.8
+    title_height = 0.8
+    title_gap = 0.6
+    column_header_height = 0.7
+    header_gap = 0.3
+    bottom_margin = 1.0
+    page_width = 18.0
+
     for persona in env_df["Persona"].unique():
         block = env_df[env_df["Persona"] == persona].reset_index(drop=True)
-        personas.append((persona, block))
-
-    base_height = 2.5  # marge haute + titre
-    row_gap = 1.1
-    header_height = 1.2
-    lane_gap = 0.8
-    for _, block in personas:
         block_rows = max(len(block), 1)
-        base_height += header_height + block_rows * row_gap + lane_gap
+        lane_height = lane_padding * 2 + header_height + block_rows * row_gap
+        personas_info.append((persona, block, block_rows, lane_height))
 
-    page_height = max(8.5, base_height)
-    page_width = 17.0
-    current_top = page_height - 0.8
-    shape_id = 1
+    total_lane_height = sum(item[3] for item in personas_info)
+    total_lane_gap = lane_gap * max(len(personas_info) - 1, 0)
+    content_height = (
+        title_height + title_gap
+        + column_header_height + header_gap
+        + total_lane_height + total_lane_gap
+        + bottom_margin
+    )
+
+    page_height = max(11.0, content_height)
+    current_top = page_height - title_height - title_gap
     shapes = []
+    shape_id = 1
 
     columns = {
-        "persona": {"x": 1.5, "width": 1.8},
-        "grt": {"x": 4.2, "width": 2.2},
-        "sr": {"x": 7.4, "width": 2.3},
-        "resource": {"x": 10.2, "width": 2.0},
-        "role": {"x": 13.4, "width": 3.2},
+        "persona": {"x": 1.8, "width": 2.0, "label": "Persona"},
+        "grt": {"x": 4.9, "width": 2.5, "label": "Profil ST"},
+        "sr": {"x": 8.2, "width": 2.5, "label": "Groupe SR"},
+        "resource": {"x": 11.0, "width": 1.8, "label": "Ressource"},
+        "role": {"x": 14.7, "width": 3.8, "label": "Rôle Azure"},
     }
 
     def add_shape(shape):
@@ -1038,9 +1052,9 @@ def build_visio_page(env, env_df):
 
     title_shape = rect_shape(
         pin_x=page_width / 2,
-        pin_y=page_height - 0.4,
-        width=6.0,
-        height=0.8,
+        pin_y=page_height - title_height / 2,
+        width=6.5,
+        height=title_height,
         text=f"Plan RBAC – {env.upper()}",
         fill="#e6f2ff",
         font_size=12,
@@ -1048,18 +1062,46 @@ def build_visio_page(env, env_df):
     )
     add_shape(title_shape)
 
-    for persona, block in personas:
-        block_rows = max(len(block), 1)
-        block_height = header_height + block_rows * row_gap
-        persona_center = current_top - header_height / 2
+    header_y = current_top - column_header_height / 2
+    for col in columns.values():
+        header_shape = rect_shape(
+            pin_x=col["x"],
+            pin_y=header_y,
+            width=col["width"],
+            height=column_header_height,
+            text=col["label"],
+            fill="#edf2ff",
+            stroke="#8aa5d9",
+            font_size=9,
+            bold=True,
+        )
+        add_shape(header_shape)
 
-        persona_text = f"Persona: {persona}"
+    current_top -= column_header_height + header_gap
+
+    for idx, (persona, block, block_rows, block_height) in enumerate(personas_info):
+        lane_top = current_top
+        lane_center = lane_top - block_height / 2
+        lane_shape = rect_shape(
+            pin_x=page_width / 2,
+            pin_y=lane_center,
+            width=page_width - 1.0,
+            height=block_height,
+            text="",
+            fill="#f9fbff",
+            stroke="#c7d2eb",
+            font_size=8,
+            rounding=0.25,
+        )
+        add_shape(lane_shape)
+
+        persona_center = lane_top - lane_padding - header_height / 2
         persona_shape = rect_shape(
             pin_x=columns["persona"]["x"],
             pin_y=persona_center,
             width=columns["persona"]["width"],
             height=0.9,
-            text=persona_text,
+            text=f"Persona: {persona}",
             fill="#edf7ff",
             stroke="#0050ef",
             font_size=10,
@@ -1089,9 +1131,9 @@ def build_visio_page(env, env_df):
         )
         add_shape(persona_link)
 
-        row_base = persona_center - 0.8
-        for idx, row in block.iterrows():
-            row_y = row_base - idx * row_gap
+        row_start_y = lane_top - lane_padding - header_height - row_height / 2
+        for row_idx, row in block.iterrows():
+            row_y = row_start_y - row_idx * row_gap
             category = row["Catégorie"]
             grr = row["GRR"]
             role_label = row["Rôle"].replace(",", "\n")
@@ -1105,40 +1147,53 @@ def build_visio_page(env, env_df):
                 pin_x=columns["sr"]["x"],
                 pin_y=row_y,
                 width=columns["sr"]["width"],
-                height=0.8,
+                height=0.85,
                 text=f"SR : {grr}",
                 fill="#f6f9ff",
                 stroke="#004c99",
                 font_size=9,
             )
-            sr_id = add_shape(sr_shape)
+            add_shape(sr_shape)
 
-            resource_color = CATEGORY_COLOR.get(category, "#f2f2f2")
-            resource_shape = rect_shape(
+            icon_fill = CATEGORY_COLOR.get(category, "#f2f2f2")
+            icon_label = CATEGORY_ABBR.get(category, category[:3]).upper()
+            icon_shape = rect_shape(
                 pin_x=columns["resource"]["x"],
-                pin_y=row_y,
-                width=columns["resource"]["width"],
-                height=0.8,
-                text=category.replace("_", " ").title(),
-                fill=resource_color,
+                pin_y=row_y + 0.2,
+                width=1.0,
+                height=1.0,
+                text=icon_label,
+                fill=icon_fill,
                 stroke="#1e1e1e",
                 font_size=9,
                 bold=True,
             )
-            resource_id = add_shape(resource_shape)
+            add_shape(icon_shape)
+
+            resource_text_shape = rect_shape(
+                pin_x=columns["resource"]["x"],
+                pin_y=row_y - 0.6,
+                width=columns["resource"]["width"],
+                height=0.4,
+                text=category.replace("_", " ").title(),
+                fill="#ffffff",
+                stroke="#ffffff",
+                font_size=8,
+            )
+            add_shape(resource_text_shape)
 
             crit_color = CRIT_COLORS.get(criticity, "#ffffff")
             role_shape = rect_shape(
                 pin_x=columns["role"]["x"],
                 pin_y=row_y,
                 width=columns["role"]["width"],
-                height=0.9,
+                height=0.95,
                 text=role_text,
                 fill=crit_color,
                 stroke="#333333",
                 font_size=9,
             )
-            role_id = add_shape(role_shape)
+            add_shape(role_shape)
 
             link_sr = columns["sr"]["x"] - columns["grt"]["x"] - (columns["grt"]["width"] + columns["sr"]["width"]) / 2
             sr_link = line_shape(
@@ -1164,7 +1219,9 @@ def build_visio_page(env, env_df):
             )
             add_shape(role_link)
 
-        current_top -= block_height + lane_gap
+        current_top -= block_height
+        if idx < len(personas_info) - 1:
+            current_top -= lane_gap
 
     page = ET.Element(ns("PageContents"), {"xmlns:r": REL_NS})
     page_sheet = ET.SubElement(page, ns("PageSheet"), {"LineStyle": "0", "FillStyle": "0", "TextStyle": "0"})
