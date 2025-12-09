@@ -959,14 +959,11 @@ def export_visio(df):
 
 def visio_color(hex_color):
     if not hex_color:
-        return "RGB(255,255,255)"
+        return "#ffffff"
     value = hex_color.lstrip("#")
     if len(value) != 6:
-        return "RGB(255,255,255)"
-    r = int(value[0:2], 16)
-    g = int(value[2:4], 16)
-    b = int(value[4:6], 16)
-    return f"RGB({r},{g},{b})"
+        return "#ffffff"
+    return f"#{value.lower()}"
 
 
 def sanitize_visio_text(text):
@@ -1353,8 +1350,11 @@ def shape_to_element(shape):
     if text_value:
         char_section = ET.SubElement(element, ns("Section"), {"N": "Character", "IX": "0"})
         char_row = ET.SubElement(char_section, ns("Row"), {"IX": "0"})
-        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": "4"})
-        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "U": "PT", "V": str(shape.get("font_size", 10))})
+        font_value = shape.get("font", "Calibri")
+        size_pt = float(shape.get("font_size", 10))
+        size_in = size_pt / 72.0
+        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": font_value})
+        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "U": "IN", "V": f"{size_in:.4f}"})
         if shape.get("bold"):
             ET.SubElement(char_row, ns("Cell"), {"N": "Style", "V": "1"})
         text_el = ET.SubElement(element, ns("Text"))
