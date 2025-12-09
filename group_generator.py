@@ -1039,7 +1039,7 @@ def build_visio_page(env, env_df):
             "rounding": rounding,
         }
 
-    def line_shape(pin_x, pin_y, width, text=""):
+    def line_shape(pin_x, pin_y, width, text="", stroke="#004c99", arrow=True, line_weight=0.07):
         return {
             "type": "line",
             "pin_x": pin_x,
@@ -1047,7 +1047,9 @@ def build_visio_page(env, env_df):
             "width": max(width, 0.2),
             "height": 0.05,
             "text": text,
-            "stroke": "#004c99",
+            "stroke": stroke,
+            "arrow": arrow,
+            "line_weight": line_weight,
         }
 
     title_shape = rect_shape(
@@ -1128,6 +1130,8 @@ def build_visio_page(env, env_df):
             pin_x=columns["persona"]["x"] + (columns["persona"]["width"] / 2) + link_len / 2,
             pin_y=persona_center,
             width=link_len,
+            stroke="#0050ef",
+            line_weight=0.08,
         )
         add_shape(persona_link)
 
@@ -1200,6 +1204,8 @@ def build_visio_page(env, env_df):
                 pin_x=columns["grt"]["x"] + (columns["grt"]["width"] / 2) + link_sr / 2,
                 pin_y=row_y,
                 width=link_sr,
+                stroke="#004c99",
+                line_weight=0.07,
             )
             add_shape(sr_link)
 
@@ -1208,6 +1214,8 @@ def build_visio_page(env, env_df):
                 pin_x=columns["sr"]["x"] + (columns["sr"]["width"] / 2) + link_res / 2,
                 pin_y=row_y,
                 width=link_res,
+                stroke=icon_fill,
+                line_weight=0.06,
             )
             add_shape(res_link)
 
@@ -1216,8 +1224,25 @@ def build_visio_page(env, env_df):
                 pin_x=columns["resource"]["x"] + (columns["resource"]["width"] / 2) + link_role / 2,
                 pin_y=row_y,
                 width=link_role,
+                stroke=crit_color,
+                line_weight=0.08,
             )
             add_shape(role_link)
+
+            if is_pim:
+                badge_shape = rect_shape(
+                    pin_x=columns["role"]["x"] + columns["role"]["width"] / 2 - 0.4,
+                    pin_y=row_y + 0.35,
+                    width=0.8,
+                    height=0.35,
+                    text="PIM",
+                    fill="#ffd6d6",
+                    stroke="#c0392b",
+                    font_size=8,
+                    bold=True,
+                    rounding=0.1,
+                )
+                add_shape(badge_shape)
 
         current_top -= block_height
         if idx < len(personas_info) - 1:
@@ -1268,7 +1293,11 @@ def shape_to_element(shape):
     add_cell("LineColor", visio_color(shape.get("stroke", "#004c99")))
 
     if shape.get("type") == "line":
-        add_cell("EndArrow", 3)
+        add_cell("LineWeight", shape.get("line_weight", 0.04))
+        if shape.get("arrow", True):
+            add_cell("EndArrow", 3)
+        else:
+            add_cell("EndArrow", 0)
     else:
         add_cell("FillForegnd", visio_color(shape.get("fill", "#ffffff")))
         add_cell("FillPattern", 31)
@@ -1278,7 +1307,8 @@ def shape_to_element(shape):
     if text_value:
         char_section = ET.SubElement(element, ns("Section"), {"N": "Character", "IX": "0"})
         char_row = ET.SubElement(char_section, ns("Row"), {"IX": "0"})
-        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "V": str(shape.get("font_size", 10))})
+        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": "Calibri"})
+        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "U": "PT", "V": str(shape.get("font_size", 10))})
         if shape.get("bold"):
             ET.SubElement(char_row, ns("Cell"), {"N": "Style", "V": "1"})
         text_el = ET.SubElement(element, ns("Text"))
