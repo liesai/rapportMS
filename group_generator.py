@@ -1256,10 +1256,14 @@ def shape_to_element(shape):
         element.set("OneD", "1")
     add_cell = lambda name, value: ET.SubElement(element, ns("Cell"), {"N": name, "V": str(value)})
 
+    width = shape.get("width", 1)
+    height = shape.get("height", 0.6)
     add_cell("PinX", shape["pin_x"])
     add_cell("PinY", shape["pin_y"])
-    add_cell("Width", shape.get("width", 1))
-    add_cell("Height", shape.get("height", 0.6))
+    add_cell("Width", width)
+    add_cell("Height", height)
+    add_cell("LocPinX", width / 2)
+    add_cell("LocPinY", height / 2)
     add_cell("Angle", 0)
     add_cell("LineColor", visio_color(shape.get("stroke", "#004c99")))
 
