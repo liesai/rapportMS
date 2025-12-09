@@ -1017,6 +1017,9 @@ def build_visio_page(env, env_df):
         "role": {"x": 14.7, "width": 3.8, "label": "Rôle Azure"},
     }
 
+    def format_caps(value):
+        return (value or "").upper()
+
     def add_shape(shape):
         nonlocal shape_id
         shape["id"] = shape_id
@@ -1052,6 +1055,17 @@ def build_visio_page(env, env_df):
             "line_weight": line_weight,
         }
 
+    def arrow_shape(pin_x, pin_y, width=0.35, height=0.25, fill="#004c99", stroke="#004c99"):
+        return {
+            "type": "arrow",
+            "pin_x": pin_x,
+            "pin_y": pin_y,
+            "width": width,
+            "height": height,
+            "fill": fill,
+            "stroke": stroke,
+        }
+
     title_shape = rect_shape(
         pin_x=page_width / 2,
         pin_y=page_height - title_height / 2,
@@ -1071,10 +1085,10 @@ def build_visio_page(env, env_df):
             pin_y=header_y,
             width=col["width"],
             height=column_header_height,
-            text=col["label"],
+            text=format_caps(col["label"]),
             fill="#edf2ff",
             stroke="#8aa5d9",
-            font_size=9,
+            font_size=11,
             bold=True,
         )
         add_shape(header_shape)
@@ -1103,10 +1117,10 @@ def build_visio_page(env, env_df):
             pin_y=persona_center,
             width=columns["persona"]["width"],
             height=0.9,
-            text=f"Persona: {persona}",
+            text=format_caps(f"Persona: {persona}"),
             fill="#edf7ff",
             stroke="#0050ef",
-            font_size=10,
+            font_size=13,
             bold=True,
         )
         persona_id = add_shape(persona_shape)
@@ -1117,10 +1131,10 @@ def build_visio_page(env, env_df):
             pin_y=persona_center,
             width=columns["grt"]["width"],
             height=0.9,
-            text=f"ST : {grt_value}",
+            text=format_caps(f"ST : {grt_value}"),
             fill="#e6f2ff",
             stroke="#004c99",
-            font_size=10,
+            font_size=13,
             bold=True,
         )
         grt_id = add_shape(grt_shape)
@@ -1134,6 +1148,15 @@ def build_visio_page(env, env_df):
             line_weight=0.08,
         )
         add_shape(persona_link)
+        persona_arrow = arrow_shape(
+            pin_x=columns["grt"]["x"] - columns["grt"]["width"] / 2 - 0.15,
+            pin_y=persona_center,
+            width=0.35,
+            height=0.25,
+            fill="#0050ef",
+            stroke="#0050ef",
+        )
+        add_shape(persona_arrow)
 
         row_start_y = lane_top - lane_padding - header_height - row_height / 2
         for row_idx, row in block.iterrows():
@@ -1152,10 +1175,10 @@ def build_visio_page(env, env_df):
                 pin_y=row_y,
                 width=columns["sr"]["width"],
                 height=0.85,
-                text=f"SR : {grr}",
+                text=format_caps(f"SR : {grr}"),
                 fill="#f6f9ff",
                 stroke="#004c99",
-                font_size=9,
+                font_size=12,
             )
             add_shape(sr_shape)
 
@@ -1166,10 +1189,10 @@ def build_visio_page(env, env_df):
                 pin_y=row_y + 0.2,
                 width=1.0,
                 height=1.0,
-                text=icon_label,
+                text=format_caps(icon_label),
                 fill=icon_fill,
                 stroke="#1e1e1e",
-                font_size=9,
+                font_size=12,
                 bold=True,
             )
             add_shape(icon_shape)
@@ -1179,10 +1202,10 @@ def build_visio_page(env, env_df):
                 pin_y=row_y - 0.6,
                 width=columns["resource"]["width"],
                 height=0.4,
-                text=category.replace("_", " ").title(),
+                text=format_caps(category.replace("_", " ")),
                 fill="#ffffff",
                 stroke="#ffffff",
-                font_size=8,
+                font_size=10,
             )
             add_shape(resource_text_shape)
 
@@ -1192,10 +1215,10 @@ def build_visio_page(env, env_df):
                 pin_y=row_y,
                 width=columns["role"]["width"],
                 height=0.95,
-                text=role_text,
+                text=format_caps(role_text),
                 fill=crit_color,
                 stroke="#333333",
-                font_size=9,
+                font_size=11,
             )
             add_shape(role_shape)
 
@@ -1208,6 +1231,13 @@ def build_visio_page(env, env_df):
                 line_weight=0.07,
             )
             add_shape(sr_link)
+            sr_arrow = arrow_shape(
+                pin_x=columns["sr"]["x"] - columns["sr"]["width"] / 2 - 0.15,
+                pin_y=row_y,
+                fill="#004c99",
+                stroke="#004c99",
+            )
+            add_shape(sr_arrow)
 
             link_res = columns["resource"]["x"] - columns["sr"]["x"] - (columns["sr"]["width"] + columns["resource"]["width"]) / 2
             res_link = line_shape(
@@ -1218,6 +1248,13 @@ def build_visio_page(env, env_df):
                 line_weight=0.06,
             )
             add_shape(res_link)
+            res_arrow = arrow_shape(
+                pin_x=columns["resource"]["x"] - columns["resource"]["width"] / 2 - 0.15,
+                pin_y=row_y,
+                fill=icon_fill,
+                stroke=icon_fill,
+            )
+            add_shape(res_arrow)
 
             link_role = columns["role"]["x"] - columns["resource"]["x"] - (columns["resource"]["width"] + columns["role"]["width"]) / 2
             role_link = line_shape(
@@ -1228,6 +1265,13 @@ def build_visio_page(env, env_df):
                 line_weight=0.08,
             )
             add_shape(role_link)
+            role_arrow = arrow_shape(
+                pin_x=columns["role"]["x"] - columns["role"]["width"] / 2 - 0.2,
+                pin_y=row_y,
+                fill=crit_color,
+                stroke=crit_color,
+            )
+            add_shape(role_arrow)
 
             if is_pim:
                 badge_shape = rect_shape(
@@ -1235,10 +1279,10 @@ def build_visio_page(env, env_df):
                     pin_y=row_y + 0.35,
                     width=0.8,
                     height=0.35,
-                    text="PIM",
+                    text=format_caps("PIM"),
                     fill="#ffd6d6",
                     stroke="#c0392b",
-                    font_size=8,
+                    font_size=10,
                     bold=True,
                     rounding=0.1,
                 )
@@ -1292,7 +1336,9 @@ def shape_to_element(shape):
     add_cell("Angle", 0)
     add_cell("LineColor", visio_color(shape.get("stroke", "#004c99")))
 
-    if shape.get("type") == "line":
+    shape_type = shape.get("type")
+
+    if shape_type == "line":
         add_cell("LineWeight", shape.get("line_weight", 0.04))
         if shape.get("arrow", True):
             add_cell("EndArrow", 3)
@@ -1307,7 +1353,7 @@ def shape_to_element(shape):
     if text_value:
         char_section = ET.SubElement(element, ns("Section"), {"N": "Character", "IX": "0"})
         char_row = ET.SubElement(char_section, ns("Row"), {"IX": "0"})
-        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": "Calibri"})
+        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": "4"})
         ET.SubElement(char_row, ns("Cell"), {"N": "Size", "U": "PT", "V": str(shape.get("font_size", 10))})
         if shape.get("bold"):
             ET.SubElement(char_row, ns("Cell"), {"N": "Style", "V": "1"})
@@ -1315,13 +1361,27 @@ def shape_to_element(shape):
         text_el.text = text_value
 
     geom = ET.SubElement(element, ns("Section"), {"N": "Geometry", "IX": "0"})
-    if shape.get("type") == "line":
+    if shape_type == "line":
         row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo", "IX": "0"})
         ET.SubElement(row, ns("Cell"), {"N": "X", "V": "0"})
         ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
         row = ET.SubElement(geom, ns("Row"), {"T": "LineTo", "IX": "1"})
         ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(shape.get("width", 1))})
         ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
+    elif shape_type == "arrow":
+        w = width
+        h = height
+        points = [
+            (0, h / 2),
+            (w * 0.75, h),
+            (w, h / 2),
+            (w * 0.75, 0),
+            (0, h / 2)
+        ]
+        for idx, (x, y) in enumerate(points):
+            row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo" if idx == 0 else "LineTo", "IX": str(idx)})
+            ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(x)})
+            ET.SubElement(row, ns("Cell"), {"N": "Y", "V": str(y)})
     else:
         points = [
             (0, 0),
