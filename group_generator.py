@@ -2,10 +2,11 @@ import gradio as gr
 import pandas as pd
 import tempfile
 import html
-import io
-import zipfile
-from datetime import datetime
+import shutil
+from pathlib import Path
 import xml.etree.ElementTree as ET
+import vsdx
+from vsdx import VisioFile
 
 # ===========================================
 #   ABRÉVIATIONS DES CATÉGORIES
@@ -900,29 +901,60 @@ def export_drawio(df):
 # ===========================================
 
 
-def export_visio(df):
-    """Construit un fichier .vsdx (format Visio 2013+) basé sur la doc officielle
-    https://learn.microsoft.com/office/client-developer/visio/visio-file-format-reference"""
-    if df.empty:
-        return None
-
-    builder = VisioPackageBuilder()
-
-    for env in df["Env"].unique():
-        env_df = df[df["Env"] == env]
-        page_xml = build_visio_page(env, env_df)
-        builder.add_page(env, page_xml)
-
-    return builder.build()
-
-
 VISIO_NS = "http://schemas.microsoft.com/office/visio/2012/main"
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 
 def ns(tag):
     return f"{{{VISIO_NS}}}{tag}"
+
+
+def export_visio(df):
+    """Génère un Visio multi-feuilles en s'appuyant sur le template officiel
+    embarqué dans le package `vsdx` (structure conforme à Microsoft)."""
+    if df.empty:
+        return None
+
+    template_path = Path(vsdx.__file__).resolve().parent / "media" / "media.vsdx"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vsdx")
+    tmp.close()
+    shutil.copyfile(template_path, tmp.name)
+
+    envs = [env for env in df["Env"].unique() if not df[df["Env"] == env].empty]
+    if not envs:
+        return None
+
+    with VisioFile(tmp.name) as vis:
+        base_pages = list(vis.pages)
+        if not base_pages:
+            raise RuntimeError("Le template Visio ne contient aucune page de base.")
+
+        # conserver la première page comme gabarit, supprimer le reste
+        for extra_page in base_pages[1:]:
+            vis.remove_page_by_index(extra_page.index_num)
+
+        def hydrate_page(page_obj, env_name, env_df):
+            page_element, page_width, page_height = build_visio_page(env_name, env_df)
+            page_obj.name = env_name.upper()
+            page_obj.width = page_width
+            page_obj.height = page_height
+            page_obj.xml = ET.ElementTree(page_element)
+
+        first_env = envs[0]
+        first_df = df[df["Env"] == first_env]
+        hydrate_page(base_pages[0], first_env, first_df)
+
+        for env in envs[1:]:
+            env_df = df[df["Env"] == env]
+            new_page = vis.add_page(name=env.upper())
+            # synchroniser l'identifiant de page nouvellement créé
+            latest_page = vis.pages_xml.getroot().findall(ns("Page"))[-1]
+            new_page.page_id = latest_page.attrib.get("ID", "")
+            hydrate_page(new_page, env, env_df)
+
+        vis.save_vsdx(tmp.name)
+
+    return tmp.name
 
 
 def visio_color(hex_color):
@@ -1134,17 +1166,31 @@ def build_visio_page(env, env_df):
 
         current_top -= block_height + lane_gap
 
-    page = ET.Element(ns("PageContents"))
-    page_sheet = ET.SubElement(page, ns("PageSheet"))
+    page = ET.Element(ns("PageContents"), {"xmlns:r": REL_NS})
+    page_sheet = ET.SubElement(page, ns("PageSheet"), {"LineStyle": "0", "FillStyle": "0", "TextStyle": "0"})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "PageWidth", "V": str(page_width)})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "PageHeight", "V": str(page_height)})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwOffsetX", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwOffsetY", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageScale", "U": "MM", "V": "0.03937007874015748"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "DrawingScale", "U": "MM", "V": "0.03937007874015748"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "DrawingSizeType", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "DrawingScaleType", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "InhibitSnap", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageLockReplace", "U": "BOOL", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageLockDuplicate", "U": "BOOL", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "UIVisibility", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwType", "V": "0"})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwObliqueAngle", "V": "0"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwScaleFactor", "V": "1"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "DrawingResizeType", "V": "1"})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageShapeSplit", "V": "1"})
 
     shapes_el = ET.SubElement(page, ns("Shapes"))
     for shape in shapes:
         shapes_el.append(shape_to_element(shape))
 
-    return ET.tostring(page, encoding="utf-8", xml_declaration=True).decode("utf-8")
+    return page, page_width, page_height
 
 
 def shape_to_element(shape):
@@ -1200,144 +1246,6 @@ def shape_to_element(shape):
 
     return element
 
-
-class VisioPackageBuilder:
-    def __init__(self):
-        self.pages = []
-
-    def add_page(self, env, xml):
-        self.pages.append({"name": env.upper(), "xml": xml})
-
-    def build(self):
-        if not self.pages:
-            return None
-
-        timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-        buffer = io.BytesIO()
-
-        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("[Content_Types].xml", self._content_types())
-            archive.writestr("_rels/.rels", self._package_rels())
-            archive.writestr("docProps/core.xml", self._core_props(timestamp))
-            archive.writestr("docProps/app.xml", self._app_props())
-            archive.writestr("visio/document.xml", self._document_xml(timestamp))
-            archive.writestr("visio/_rels/document.xml.rels", self._document_rels())
-
-            for idx, page in enumerate(self.pages, start=1):
-                archive.writestr(f"visio/pages/page{idx}.xml", page["xml"])
-
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vsdx")
-        tmp.write(buffer.getvalue())
-        tmp.close()
-        return tmp.name
-
-    def _content_types(self):
-        page_overrides = "\n".join(
-            [
-                f'    <Override PartName="/visio/pages/page{idx}.xml" ContentType="application/vnd.ms-visio.page+xml"/>'
-                for idx in range(1, len(self.pages) + 1)
-            ]
-        )
-        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
-    <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
-    <Default Extension=\"xml\" ContentType=\"application/xml\"/>
-    <Override PartName=\"/visio/document.xml\" ContentType=\"application/vnd.ms-visio.document.main+xml\"/>
-    <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>
-    <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>
-{page_overrides}
-</Types>
-"""
-
-    def _package_rels(self):
-        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Relationships xmlns=\"{PKG_REL_NS}\">
-    <Relationship Id=\"rId1\" Type=\"http://schemas.microsoft.com/visio/2010/relationships/document\" Target=\"visio/document.xml\"/>
-    <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>
-    <Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>
-</Relationships>
-"""
-
-    def _core_props(self, timestamp):
-        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
-    <dc:title>Azure RBAC Blueprint</dc:title>
-    <dc:creator>Azure RBAC Generator</dc:creator>
-    <cp:lastModifiedBy>Azure RBAC Generator</cp:lastModifiedBy>
-    <dcterms:created xsi:type=\"dcterms:W3CDTF\">{timestamp}</dcterms:created>
-    <dcterms:modified xsi:type=\"dcterms:W3CDTF\">{timestamp}</dcterms:modified>
-</cp:coreProperties>
-"""
-
-    def _app_props(self):
-        page_count = len(self.pages)
-        titles = "".join([
-            f"            <vt:lpstr>{page['name']}</vt:lpstr>\n" for page in self.pages
-        ])
-        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">
-    <Template>AzureBlueprint</Template>
-    <Pages>{page_count}</Pages>
-    <Application>Microsoft Visio</Application>
-    <HeadingPairs>
-        <vt:vector size=\"2\" baseType=\"variant\">
-            <vt:variant>
-                <vt:lpstr>Pages</vt:lpstr>
-            </vt:variant>
-            <vt:variant>
-                <vt:i4>{page_count}</vt:i4>
-            </vt:variant>
-        </vt:vector>
-    </HeadingPairs>
-    <TitlesOfParts>
-        <vt:vector size=\"{page_count}\" baseType=\"lpstr\">
-{titles}        </vt:vector>
-    </TitlesOfParts>
-    <Company></Company>
-    <AppVersion>16.0</AppVersion>
-</Properties>
-"""
-
-    def _document_xml(self, timestamp):
-        document = ET.Element(ns("VisioDocument"), {"xmlns:r": REL_NS})
-        props = ET.SubElement(document, ns("DocumentProperties"))
-        ET.SubElement(props, ns("Creator")).text = "Azure RBAC Generator"
-        ET.SubElement(props, ns("TimeCreated")).text = timestamp
-        settings = ET.SubElement(document, ns("DocumentSettings"))
-        ET.SubElement(settings, ns("EnableAutoConnect")).text = "0"
-
-        pages = ET.SubElement(document, ns("Pages"))
-        for idx, page in enumerate(self.pages, start=1):
-            page_el = ET.SubElement(
-                pages,
-                ns("Page"),
-                {
-                    "ID": str(idx),
-                    "Name": page["name"],
-                    "NameU": page["name"],
-                    "IsCustomName": "1",
-                    "IsCustomNameU": "1",
-                },
-            )
-            rel = ET.SubElement(page_el, ns("Rel"))
-            rel.set(f"{{{REL_NS}}}id", f"rId{idx}")
-
-        return ET.tostring(document, encoding="utf-8", xml_declaration=True).decode("utf-8")
-
-    def _document_rels(self):
-        rels = ET.Element("Relationships", {"xmlns": PKG_REL_NS})
-        for idx in range(1, len(self.pages) + 1):
-            ET.SubElement(
-                rels,
-                "Relationship",
-                {
-                    "Id": f"rId{idx}",
-                    "Type": "http://schemas.microsoft.com/visio/2010/relationships/page",
-                    "Target": f"pages/page{idx}.xml",
-                },
-            )
-
-        return ET.tostring(rels, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
 
