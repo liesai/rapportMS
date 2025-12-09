@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 import vsdx
 from vsdx import VisioFile
 
+BASE_DIR = Path(__file__).resolve().parent
+
 # ===========================================
 #   ABRÉVIATIONS DES CATÉGORIES
 # ===========================================
@@ -75,6 +77,8 @@ AZURE_BRAND_COLORS = {
     "sr_border": "#106EBE",
     "sr_fill": "#F6F9FF",
 }
+
+VISIO_TEMPLATE_PATH = BASE_DIR / "templates" / "azure_blueprint_template.vsdx"
 
 # ===========================================
 #   SHAPES OFFICIELS AZURE POUR DRAW.IO
@@ -154,6 +158,7 @@ LEGEND_ITEMS = [
 ET.register_namespace("", "http://schemas.microsoft.com/office/visio/2012/main")
 ET.register_namespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
 
+BASE_DIR = Path(__file__).resolve().parent
 
 # ===========================================
 #   RACCOURCISSEMENT (max 8 chars)
@@ -944,7 +949,7 @@ def export_visio(df):
     if df.empty:
         return None
 
-    template_path = Path(vsdx.__file__).resolve().parent / "media" / "media.vsdx"
+    template_path = VISIO_TEMPLATE_PATH if VISIO_TEMPLATE_PATH.exists() else Path(vsdx.__file__).resolve().parent / "media" / "media.vsdx"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vsdx")
     tmp.close()
     shutil.copyfile(template_path, tmp.name)
@@ -1002,49 +1007,39 @@ def sanitize_visio_text(text):
 
 
 def build_visio_page(env, env_df):
-    personas_info = []
-    lane_padding = 0.45
-    header_height = 1.05
-    row_gap = 1.3
-    row_height = 0.9
-    lane_gap = 0.8
-    title_height = 0.8
-    title_gap = 0.6
-    column_header_height = 0.7
-    header_gap = 0.3
-    bottom_margin = 1.0
-    page_width = 18.0
-
+    personas = []
     for persona in env_df["Persona"].unique():
         block = env_df[env_df["Persona"] == persona].reset_index(drop=True)
-        block_rows = max(len(block), 1)
-        lane_height = lane_padding * 2 + header_height + block_rows * row_gap
-        personas_info.append((persona, block, block_rows, lane_height))
+        personas.append((persona, block))
 
-    total_lane_height = sum(item[3] for item in personas_info)
-    total_lane_gap = lane_gap * max(len(personas_info) - 1, 0)
-    content_height = (
-        title_height + title_gap
-        + column_header_height + header_gap
-        + total_lane_height + total_lane_gap
-        + bottom_margin
-    )
+    page_width = 16.5
+    header_height = 1.1
+    row_gap = 1.3
+    lane_padding = 0.45
+    lane_gap = 0.9
+    bottom_padding = 0.8
+    top_padding = 1.0
 
-    page_height = max(11.0, content_height)
-    current_top = page_height - title_height - title_gap
+    lane_metrics = []
+    total_height = top_padding
+    for persona, block in personas:
+        rows = max(len(block), 1)
+        height = lane_padding * 2 + header_height + rows * row_gap + bottom_padding
+        lane_metrics.append((persona, block, rows, height))
+        total_height += height + lane_gap
+
+    page_height = max(12.0, total_height)
+    current_top = page_height - 0.7
     shapes = []
     shape_id = 1
 
     columns = {
-        "persona": {"x": 1.8, "width": 2.0, "label": "Persona"},
-        "grt": {"x": 4.9, "width": 2.5, "label": "Profil ST"},
-        "sr": {"x": 8.2, "width": 2.5, "label": "Groupe SR"},
-        "resource": {"x": 11.0, "width": 1.8, "label": "Ressource"},
-        "role": {"x": 14.7, "width": 3.8, "label": "Rôle Azure"},
+        "persona": {"x": 1.8, "width": 2.4},
+        "grt": {"x": 4.7, "width": 2.6},
+        "sr": {"x": 7.7, "width": 2.4},
+        "resource": {"x": 10.3, "width": 2.4},
+        "role": {"x": 13.6, "width": 3.6},
     }
-
-    def format_caps(value):
-        return (value or "").upper()
 
     def add_shape(shape):
         nonlocal shape_id
@@ -1069,18 +1064,28 @@ def build_visio_page(env, env_df):
             "stroke_weight": stroke_weight,
         }
 
-    def line_shape(pin_x, pin_y, width, text="", stroke="#004c99", arrow=True, line_weight=0.07):
-        return {
-            "type": "line",
-            "pin_x": pin_x,
-            "pin_y": pin_y,
-            "width": max(width, 0.2),
-            "height": 0.05,
-            "text": text,
-            "stroke": stroke,
-            "arrow": arrow,
-            "line_weight": line_weight,
-        }
+    def connector_segment(x_start, x_end, y, color, height=0.18):
+        width = max((x_end - x_start) - 0.4, 0.3)
+        bar = rect_shape(
+            pin_x=x_start + width / 2 + 0.2,
+            pin_y=y,
+            width=width,
+            height=height,
+            text="",
+            fill=color,
+            stroke=color,
+            stroke_weight=height / 5,
+        )
+        add_shape(bar)
+        arrow = arrow_shape(
+            pin_x=x_end - 0.35,
+            pin_y=y,
+            width=0.45,
+            height=0.35,
+            fill=color,
+            stroke=color,
+        )
+        add_shape(arrow)
 
     def arrow_shape(pin_x, pin_y, width=0.35, height=0.25, fill="#004c99", stroke="#004c99"):
         return {
@@ -1095,34 +1100,19 @@ def build_visio_page(env, env_df):
 
     title_shape = rect_shape(
         pin_x=page_width / 2,
-        pin_y=page_height - title_height / 2,
+        pin_y=page_height - 0.4,
         width=6.5,
-        height=title_height,
+        height=0.8,
         text=f"Plan RBAC – {env.upper()}",
-        fill="#e6f2ff",
+        fill=AZURE_BRAND_COLORS["st_fill"],
+        stroke=AZURE_BRAND_COLORS["st_border"],
         font_size=12,
         bold=True,
+        stroke_weight=0.03,
     )
     add_shape(title_shape)
 
-    header_y = current_top - column_header_height / 2
-    for col in columns.values():
-        header_shape = rect_shape(
-            pin_x=col["x"],
-            pin_y=header_y,
-            width=col["width"],
-            height=column_header_height,
-            text=format_caps(col["label"]),
-            fill=AZURE_BRAND_COLORS["section_fill"],
-            stroke=AZURE_BRAND_COLORS["section_border"],
-            font_size=11,
-            bold=True,
-        )
-        add_shape(header_shape)
-
-    current_top -= column_header_height + header_gap
-
-    for idx, (persona, block, block_rows, block_height) in enumerate(personas_info):
+    for persona, block, rows, block_height in lane_metrics:
         lane_top = current_top
         lane_center = lane_top - block_height / 2
         lane_shape = rect_shape(
@@ -1133,9 +1123,8 @@ def build_visio_page(env, env_df):
             text="",
             fill=AZURE_BRAND_COLORS["section_fill"],
             stroke=AZURE_BRAND_COLORS["section_border"],
-            font_size=8,
-            rounding=0.25,
-            stroke_weight=0.05,
+            stroke_weight=0.04,
+            rounding=0.2,
         )
         add_shape(lane_shape)
 
@@ -1144,53 +1133,41 @@ def build_visio_page(env, env_df):
             pin_x=columns["persona"]["x"],
             pin_y=persona_center,
             width=columns["persona"]["width"],
-            height=0.9,
-            text=format_caps(f"Persona: {persona}"),
+            height=header_height,
+            text=f"PERSONA\n{persona.upper()}",
             fill=AZURE_BRAND_COLORS["persona_fill"],
             stroke=AZURE_BRAND_COLORS["persona_border"],
-            font_size=13,
+            font_size=11,
             bold=True,
             stroke_weight=0.04,
         )
-        persona_id = add_shape(persona_shape)
+        add_shape(persona_shape)
 
         grt_value = block["GRT"].iloc[0]
         grt_shape = rect_shape(
             pin_x=columns["grt"]["x"],
             pin_y=persona_center,
             width=columns["grt"]["width"],
-            height=0.9,
-            text=format_caps(f"ST : {grt_value}"),
+            height=header_height,
+            text=f"PROFIL ST\n{grt_value.upper()}",
             fill=AZURE_BRAND_COLORS["st_fill"],
             stroke=AZURE_BRAND_COLORS["st_border"],
-            font_size=13,
+            font_size=11,
             bold=True,
             stroke_weight=0.04,
         )
-        grt_id = add_shape(grt_shape)
+        add_shape(grt_shape)
 
-        link_len = columns["grt"]["x"] - columns["persona"]["x"] - (columns["persona"]["width"] + columns["grt"]["width"]) / 2
-        persona_link = line_shape(
-            pin_x=columns["persona"]["x"] + (columns["persona"]["width"] / 2) + link_len / 2,
-            pin_y=persona_center,
-            width=link_len,
-            stroke=AZURE_BRAND_COLORS["persona_border"],
-            line_weight=0.08,
-        )
-        add_shape(persona_link)
-        persona_arrow = arrow_shape(
-            pin_x=columns["grt"]["x"] - columns["grt"]["width"] / 2 - 0.15,
-            pin_y=persona_center,
-            width=0.35,
-            height=0.25,
-            fill=AZURE_BRAND_COLORS["persona_border"],
-            stroke=AZURE_BRAND_COLORS["persona_border"],
-        )
-        add_shape(persona_arrow)
+        persona_end = columns["persona"]["x"] + columns["persona"]["width"] / 2
+        grt_start = columns["grt"]["x"] - columns["grt"]["width"] / 2
+        connector_segment(persona_end, grt_start, persona_center, AZURE_BRAND_COLORS["persona_border"])
 
-        row_start_y = lane_top - lane_padding - header_height - row_height / 2
+        row_start = persona_center - header_height / 2 - 0.6
+        if rows == 0:
+            rows = 1
+
         for row_idx, row in block.iterrows():
-            row_y = row_start_y - row_idx * row_gap
+            row_y = row_start - row_idx * row_gap
             category = row["Catégorie"]
             grr = row["GRR"]
             role_label = row["Rôle"].replace(",", "\n")
@@ -1198,48 +1175,36 @@ def build_visio_page(env, env_df):
             is_pim = "PIM" in criticity or any(r.strip() in PIM_REQUIRED for r in row["Rôle"].split(","))
             resource_label = CATEGORY_DISPLAY_LABELS.get(category, category.replace("_", " ").title())
             role_text = f"{resource_label}\n{role_label}"
-            if is_pim and "(PIM)" not in role_text:
+            if is_pim and "PIM REQUIS" not in role_text:
                 role_text += "\nPIM REQUIS"
 
             sr_shape = rect_shape(
                 pin_x=columns["sr"]["x"],
                 pin_y=row_y,
                 width=columns["sr"]["width"],
-                height=0.85,
-                text=format_caps(f"SR : {grr}"),
+                height=0.9,
+                text=f"SR\n{grr.upper()}",
                 fill=AZURE_BRAND_COLORS["sr_fill"],
                 stroke=AZURE_BRAND_COLORS["sr_border"],
-                font_size=12,
+                font_size=10,
                 stroke_weight=0.03,
             )
             add_shape(sr_shape)
 
             icon_fill = CATEGORY_COLOR.get(category, "#f2f2f2")
-            icon_label = resource_label
-            icon_shape = rect_shape(
+            resource_shape = rect_shape(
                 pin_x=columns["resource"]["x"],
-                pin_y=row_y + 0.2,
-                width=1.0,
-                height=1.0,
-                text=icon_label,
+                pin_y=row_y,
+                width=columns["resource"]["width"],
+                height=0.9,
+                text=resource_label.upper(),
                 fill=icon_fill,
                 stroke="#1e1e1e",
-                font_size=12,
-                bold=True,
-            )
-            add_shape(icon_shape)
-
-            resource_text_shape = rect_shape(
-                pin_x=columns["resource"]["x"],
-                pin_y=row_y - 0.6,
-                width=columns["resource"]["width"],
-                height=0.4,
-                text=resource_label,
-                fill="#ffffff",
-                stroke="#ffffff",
                 font_size=10,
+                bold=True,
+                stroke_weight=0.03,
             )
-            add_shape(resource_text_shape)
+            add_shape(resource_shape)
 
             crit_color = CRIT_COLORS.get(criticity, "#ffffff")
             if is_pim:
@@ -1248,65 +1213,18 @@ def build_visio_page(env, env_df):
                 pin_x=columns["role"]["x"],
                 pin_y=row_y,
                 width=columns["role"]["width"],
-                height=0.95,
-                text=format_caps(role_text),
+                height=1.0,
+                text=role_text.upper(),
                 fill=crit_color,
                 stroke="#333333",
-                font_size=11,
+                font_size=9,
                 stroke_weight=0.03,
             )
             add_shape(role_shape)
 
-            link_sr = columns["sr"]["x"] - columns["grt"]["x"] - (columns["grt"]["width"] + columns["sr"]["width"]) / 2
-            sr_link = line_shape(
-                pin_x=columns["grt"]["x"] + (columns["grt"]["width"] / 2) + link_sr / 2,
-                pin_y=row_y,
-                width=link_sr,
-                stroke=AZURE_BRAND_COLORS["st_border"],
-                line_weight=0.07,
-            )
-            add_shape(sr_link)
-            sr_arrow = arrow_shape(
-                pin_x=columns["sr"]["x"] - columns["sr"]["width"] / 2 - 0.15,
-                pin_y=row_y,
-                fill=AZURE_BRAND_COLORS["st_border"],
-                stroke=AZURE_BRAND_COLORS["st_border"],
-            )
-            add_shape(sr_arrow)
-
-            link_res = columns["resource"]["x"] - columns["sr"]["x"] - (columns["sr"]["width"] + columns["resource"]["width"]) / 2
-            res_link = line_shape(
-                pin_x=columns["sr"]["x"] + (columns["sr"]["width"] / 2) + link_res / 2,
-                pin_y=row_y,
-                width=link_res,
-                stroke=icon_fill,
-                line_weight=0.06,
-            )
-            add_shape(res_link)
-            res_arrow = arrow_shape(
-                pin_x=columns["resource"]["x"] - columns["resource"]["width"] / 2 - 0.15,
-                pin_y=row_y,
-                fill=icon_fill,
-                stroke=icon_fill,
-            )
-            add_shape(res_arrow)
-
-            link_role = columns["role"]["x"] - columns["resource"]["x"] - (columns["resource"]["width"] + columns["role"]["width"]) / 2
-            role_link = line_shape(
-                pin_x=columns["resource"]["x"] + (columns["resource"]["width"] / 2) + link_role / 2,
-                pin_y=row_y,
-                width=link_role,
-                stroke=crit_color,
-                line_weight=0.08,
-            )
-            add_shape(role_link)
-            role_arrow = arrow_shape(
-                pin_x=columns["role"]["x"] - columns["role"]["width"] / 2 - 0.2,
-                pin_y=row_y,
-                fill=crit_color,
-                stroke=crit_color,
-            )
-            add_shape(role_arrow)
+            connector_segment(columns["grt"]["x"] + columns["grt"]["width"] / 2, columns["sr"]["x"] - columns["sr"]["width"] / 2, row_y, AZURE_BRAND_COLORS["sr_border"])
+            connector_segment(columns["sr"]["x"] + columns["sr"]["width"] / 2, columns["resource"]["x"] - columns["resource"]["width"] / 2, row_y, icon_fill)
+            connector_segment(columns["resource"]["x"] + columns["resource"]["width"] / 2, columns["role"]["x"] - columns["role"]["width"] / 2, row_y, crit_color)
 
             if is_pim:
                 badge_shape = rect_shape(
@@ -1314,18 +1232,16 @@ def build_visio_page(env, env_df):
                     pin_y=row_y + 0.35,
                     width=0.8,
                     height=0.35,
-                    text=format_caps("PIM"),
+                    text="PIM",
                     fill="#ffd6d6",
                     stroke="#c0392b",
-                    font_size=10,
+                    font_size=9,
                     bold=True,
                     rounding=0.1,
                 )
                 add_shape(badge_shape)
 
-        current_top -= block_height
-        if idx < len(personas_info) - 1:
-            current_top -= lane_gap
+        current_top -= block_height + lane_gap
 
     page = ET.Element(ns("PageContents"), {"xmlns:r": REL_NS})
     page_sheet = ET.SubElement(page, ns("PageSheet"), {"LineStyle": "0", "FillStyle": "0", "TextStyle": "0"})
