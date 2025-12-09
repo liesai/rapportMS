@@ -1,6 +1,11 @@
 import gradio as gr
 import pandas as pd
 import tempfile
+import html
+import io
+import zipfile
+from datetime import datetime
+import xml.etree.ElementTree as ET
 
 # ===========================================
 #   ABRÉVIATIONS DES CATÉGORIES
@@ -14,8 +19,111 @@ CATEGORY_ABBR = {
     "sql_rbac": "sqr",
     "sql_db": "sqb",
     "ml": "aml",
-    "functions": "fnc"
+    "functions": "fnc",
+    "ingestion": "ing",
+    "consommation": "csm",
+    "bi": "bi",
+    "ia": "cog"
 }
+
+DEFAULT_ENVIRONMENTS = ["dev", "qa", "preprod", "prod"]
+
+# ===========================================
+#   COULEURS PAR CATÉGORIE (style Azure)
+# ===========================================
+
+CATEGORY_COLOR = {
+    "synapse": "#3B9AFF",        # Bleu Synapse
+    "sql_db": "#003B75",         # SQL DB (bleu foncé)
+    "sql_rbac": "#003B75",       # SQL RBAC (même couleur)
+    "storage_data": "#00A1A7",   # Storage Data (turquoise)
+    "storage_mgmt": "#007C7C",   # Storage Mgmt (teal)
+    "ml": "#7F47DD",             # Azure ML (violet)
+    "monitoring": "#00A65A",     # Monitor / Log Analytics (vert)
+    "network": "#0099D5",        # Networking (bleu cyan)
+    "functions": "#FFB300",      # Functions (jaune)
+    "security": "#D64545",       # Security (rouge)
+    "global": "#D0D6E3",         # Global (gris Azure)
+}
+
+# ===========================================
+#   SHAPES OFFICIELS AZURE POUR DRAW.IO
+#   (palette "Azure 2023" de diagrams.net)
+# ===========================================
+CRIT_COLORS = {
+    "Important": "#ffb3b3",    # rouge clair
+    "Standard":  "#b3d1ff",    # bleu clair
+    "Lecture":   "#b3e6b3",    # vert clair
+}
+PIM_REQUIRED = {
+    "Contributor",
+    "Storage Blob Data Owner",
+    "Synapse Administrator",
+    "SQL DB Contributor",
+    "SQL Server Contributor",
+    "User Access Administrator",
+    "Network Contributor",
+}
+
+AZURE_CATEGORY_TO_SHAPE = {
+    "global": "mxgraph.azure2.general.subscription",
+    "storage_data": "mxgraph.azure2.storage.blob_storage",
+    "storage_mgmt": "mxgraph.azure2.storage.storage_account",
+    "synapse": "mxgraph.azure2.analytics.synapse",
+    "sql_rbac": "mxgraph.azure2.databases.sql_server",
+    "sql_db": "mxgraph.azure2.databases.sql_database",
+    "ml": "mxgraph.azure2.ai.machine_learning",
+    "functions": "mxgraph.azure2.compute.function_apps",
+    "monitoring": "mxgraph.azure2.monitor.monitor",
+    "network": "mxgraph.azure2.network.vnet",
+    "security": "mxgraph.azure2.security.security_center",
+    "eventhub": "mxgraph.azure2.integration.event_hub",
+    "datafactory": "mxgraph.azure2.integration.data_factory",
+}
+
+AZURE_ICON_PATHS = {
+    "global": "img/lib/azure2/general/Subscriptions.svg",
+    "storage_data": "img/lib/azure2/storage/Storage_Accounts.svg",
+    "storage_mgmt": "img/lib/azure2/storage/Storage_Explorer.svg",
+    "synapse": "img/lib/azure2/analytics/Azure_Synapse_Analytics.svg",
+    "sql_rbac": "img/lib/azure2/databases/SQL_Server.svg",
+    "sql_db": "img/lib/azure2/databases/SQL_Database.svg",
+    "ml": "img/lib/azure2/ai/Azure_Machine_Learning.svg",
+    "functions": "img/lib/azure2/compute/Azure_Functions.svg",
+    "monitoring": "img/lib/azure2/analytics/Log_Analytics_Workspace.svg",
+    "network": "img/lib/azure2/networking/Virtual_Networks.svg",
+    "security": "img/lib/azure2/security/Defender.svg",
+    "eventhub": "img/lib/azure2/integration/Event_Hubs.svg",
+    "datafactory": "img/lib/azure2/integration/Data_Factory.svg",
+    "keyvault": "img/lib/azure2/security/Key_Vaults.svg",
+}
+DEFAULT_AZURE_ICON = "img/lib/azure2/general/Resource_Groups.svg"
+
+SHAPE_PERSONA = "mxgraph.azure2.general.user"
+SHAPE_GRT = "mxgraph.azure2.general.subscription"
+SHAPE_GRR = "mxgraph.azure2.general.resource_group"
+
+LEGEND_ITEMS = [
+    ("Persona", SHAPE_PERSONA),
+    ("Profil applicatif (GRT)", SHAPE_GRT),
+    ("Groupe de rôle (GRR / SR)", SHAPE_GRR),
+    ("Synapse", AZURE_CATEGORY_TO_SHAPE.get("synapse")),
+    ("SQL DB", AZURE_CATEGORY_TO_SHAPE.get("sql_db")),
+    ("SQL RBAC", AZURE_CATEGORY_TO_SHAPE.get("sql_rbac")),
+    ("Storage Data", AZURE_CATEGORY_TO_SHAPE.get("storage_data")),
+    ("Storage Mgmt", AZURE_CATEGORY_TO_SHAPE.get("storage_mgmt")),
+    ("Azure ML", AZURE_CATEGORY_TO_SHAPE.get("ml")),
+    ("Functions", AZURE_CATEGORY_TO_SHAPE.get("functions")),
+    ("Monitoring", AZURE_CATEGORY_TO_SHAPE.get("monitoring")),
+    ("Network", AZURE_CATEGORY_TO_SHAPE.get("network")),
+    ("Security", AZURE_CATEGORY_TO_SHAPE.get("security")),
+    ("Event Hub", AZURE_CATEGORY_TO_SHAPE.get("eventhub")),
+    ("Data Factory", AZURE_CATEGORY_TO_SHAPE.get("datafactory")),
+]
+
+ET.register_namespace("", "http://schemas.microsoft.com/office/visio/2012/main")
+ET.register_namespace("r", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")
+
 
 # ===========================================
 #   RACCOURCISSEMENT (max 8 chars)
@@ -29,6 +137,10 @@ def shorten(value, max_len=8):
 
 # ===========================================
 #   ROLES MICROSOFT (catalogue enrichi)
+#   Sources :
+#   - https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles
+#   - https://learn.microsoft.com/en-us/azure/synapse-analytics/security/how-to-set-up-access-control
+#   - https://learn.microsoft.com/en-us/azure/machine-learning/how-to-assign-roles
 # ===========================================
 
 ROLE_CATALOG = {
@@ -37,12 +149,30 @@ ROLE_CATALOG = {
         "Storage Blob Data Owner",
         "Storage Blob Data Contributor",
         "Storage Blob Data Reader",
-        "Storage Blob Delegator"
+        "Storage Blob Delegator",
+        "Storage Queue Data Contributor",
+        "Storage Queue Data Message Processor",
+        "Storage Queue Data Message Sender",
+        "Storage Queue Data Reader",
+        "Storage Queue Delegator",
+        "Storage Table Data Contributor",
+        "Storage Table Data Reader",
+        "Storage Table Delegator",
+        "Storage File Data Privileged Contributor",
+        "Storage File Data Privileged Reader",
+        "Storage File Data SMB Admin",
+        "Storage File Data SMB Share Contributor",
+        "Storage File Data SMB Share Elevated Contributor",
+        "Storage File Data SMB Share Reader",
+        "Storage File Data SMB Take Ownership",
+        "Storage File Delegator"
     ],
     "storage_mgmt": [
         "Storage Account Contributor",
         "Storage Account Key Operator Service Role",
-        "Storage Account Backup Contributor"
+        "Storage Account Backup Contributor",
+        "Classic Storage Account Contributor",
+        "Classic Storage Account Key Operator Service Role"
     ],
     "synapse": [
         "Synapse Administrator",
@@ -75,16 +205,27 @@ ROLE_CATALOG = {
     "functions": [
         "Contributor (Function App)",
         "Reader (Function App)",
-        "Website Contributor"
+        "Website Contributor",
+        "Web Plan Contributor"
     ],
     "monitoring": [
-        "Monitoring Reader", "Log Analytics Reader", "Log Analytics Contributor"
+        "Monitoring Contributor",
+        "Monitoring Reader",
+        "Monitoring Metrics Publisher",
+        "Log Analytics Data Reader",
+        "Log Analytics Reader",
+        "Log Analytics Contributor"
     ],
     "security": [
-        "Security Reader", "Security Admin"
+        "Security Reader",
+        "Security Admin",
+        "Security Assessment Contributor"
     ],
     "network": [
-        "Network Contributor", "Private DNS Zone Contributor"
+        "Network Contributor",
+        "Classic Network Contributor",
+        "DNS Zone Contributor",
+        "Private DNS Zone Contributor"
     ],
     "eventhub": [
         "Azure Event Hubs Data Owner",
@@ -92,14 +233,34 @@ ROLE_CATALOG = {
         "Azure Event Hubs Data Receiver"
     ],
     "keyvault": [
+        "Key Vault Administrator",
+        "Key Vault Certificates Officer",
+        "Key Vault Certificates User",
+        "Key Vault Contributor",
+        "Key Vault Crypto Officer",
+        "Key Vault Crypto Service Encryption User",
+        "Key Vault Crypto Service Release User",
+        "Key Vault Crypto User",
+        "Key Vault Data Access Administrator",
         "Key Vault Reader",
         "Key Vault Secrets Officer",
-        "Key Vault Crypto Officer"
+        "Key Vault Secrets User"
     ],
     "datafactory": [
         "Data Factory Contributor",
         "Data Factory Reader"
     ]
+}
+
+# ===========================================
+#   CONTRAINTES ENVIRONNEMENTALES
+# ===========================================
+
+ROLE_ENV_CONSTRAINTS = {
+    ("global", "Reader"): {
+        "only": ["prod"],
+        "note": "Les accès Readers globaux sont réservés à la production."
+    }
 }
 
 # ===========================================
@@ -169,6 +330,115 @@ PERSONA_BUNDLES = {
 
 
 # ===========================================
+#   ROLES CUSTOM MICROSOFT (domaines valorisés)
+# ===========================================
+
+CUSTOM_ROLE_BUNDLES = {
+    "platform-ops": {
+        "synapse": ["Platform Synapse Admin"],
+        "ingestion": ["Platform Storage Steward"],
+        "consommation": ["Platform SQL Custodian"],
+        "bi": ["Platform Monitoring Publisher"],
+        "ml": ["Platform ML Supervisor"],
+        "ia": ["Platform Cognitive Governor"]
+    },
+    "data-engineer": {
+        "synapse": ["DE Synapse Contributor"],
+        "ingestion": ["DE Data Factory Orchestrator"],
+        "consommation": ["DE SQL Data Builder"],
+        "bi": ["DE Dataset Stager"],
+        "ml": ["DE Feature Pipeline Operator"],
+        "ia": ["DE Cognitive Enabler"]
+    },
+    "data-scientist": {
+        "synapse": ["DS Synapse Reader"],
+        "ingestion": ["DS Landing Reader"],
+        "consommation": ["DS SQL Consumer"],
+        "bi": ["DS Insight Viewer"],
+        "ml": ["DS Experiment Author"],
+        "ia": ["DS Cognitive User"]
+    },
+    "bi-analyst": {
+        "synapse": ["BI Warehouse Viewer"],
+        "ingestion": ["BI Landing Consumer"],
+        "consommation": ["BI SQL Reader"],
+        "bi": ["BI Content Publisher"],
+        "ml": ["BI Feature Consumer"],
+        "ia": ["BI Cognitive Visuals"]
+    },
+    "support-engineer": {
+        "synapse": ["Support Synapse Monitor"],
+        "ingestion": ["Support Storage Monitor"],
+        "consommation": ["Support SQL Auditor"],
+        "bi": ["Support BI Observer"],
+        "ml": ["Support ML Reviewer"],
+        "ia": ["Support Cognitive Auditor"]
+    }
+}
+
+
+# ===========================================
+#   HELPERS (roles + nomenclature)
+# ===========================================
+
+def default_custom_role_name(persona, category):
+    persona_label = persona.replace("-", " ").title()
+    category_label = category.replace("_", " ").title()
+    return f"{persona_label} {category_label} Custom"
+
+
+def assemble_persona_roles(persona, custom_only=False):
+    combined = {}
+    sources = []
+
+    if not custom_only:
+        sources.append(PERSONA_BUNDLES.get(persona, {}).get("roles", {}))
+
+    sources.append(CUSTOM_ROLE_BUNDLES.get(persona, {}))
+
+    for source in sources:
+        for category, role_list in source.items():
+            combined.setdefault(category, [])
+            for role in role_list:
+                name = (role or "").strip()
+                if not name:
+                    name = default_custom_role_name(persona, category)
+                if name not in combined[category]:
+                    combined[category].append(name)
+    return combined
+
+
+# ===========================================
+#   VALIDATION / CONTRAINTES (catalogue + env)
+# ===========================================
+
+def role_exists_in_catalog(category, role):
+    catalog = ROLE_CATALOG.get(category)
+    if catalog is None:
+        return True
+    return role in catalog
+
+
+def get_env_constraint(category, role):
+    return ROLE_ENV_CONSTRAINTS.get((category, role))
+
+
+def role_allowed_in_env(category, role, env):
+    constraint = get_env_constraint(category, role)
+    if not constraint:
+        return True
+
+    allowed = constraint.get("only")
+    blocked = constraint.get("exclude")
+
+    if allowed and env not in allowed:
+        return False
+    if blocked and env in blocked:
+        return False
+    return True
+
+
+# ===========================================
 #   RECO MICROSOFT : scope recommandé
 # ===========================================
 
@@ -185,8 +455,16 @@ def determine_scope(category, role):
         return "database"
     if category == "synapse":
         return "synapse-workspace"
+    if category == "ingestion":
+        return "resource-group"
+    if category == "consommation":
+        return "workspace"
+    if category == "bi":
+        return "workspace"
     if category == "ml":
         return "ml-workspace"
+    if category == "ia":
+        return "resource-group"
     if category == "functions":
         return "function-app"
     if category in ["monitoring", "security"]:
@@ -229,6 +507,12 @@ def determine_criticality(role):
         return "Important"
     if "Reader" in role:
         return "Lecture"
+    critical_keywords = ["Admin", "Custodian", "Governor", "Supervisor"]
+    if any(keyword.lower() in role.lower() for keyword in critical_keywords):
+        return "Critique (PIM requis)"
+    important_keywords = ["Contributor", "Operator", "Publisher", "Builder", "Author", "Orchestrator"]
+    if any(keyword.lower() in role.lower() for keyword in important_keywords):
+        return "Important"
     return "Standard"
 
 
@@ -237,10 +521,10 @@ def determine_criticality(role):
 # ===========================================
 
 def generate_group_profile(domain, project, team, persona, env):
-    return f"grt-{shorten(domain)}-{shorten(project)}-{shorten(team)}-{shorten(persona)}-{env}"
+    return f"st-{shorten(domain)}-{shorten(project)}-{shorten(team)}-{shorten(persona)}"
 
 def generate_group_role(domain, project, team, persona, category, env):
-    return f"grr-{shorten(domain)}-{shorten(project)}-{shorten(team)}-{shorten(persona)}-{CATEGORY_ABBR.get(category,category[:3])}-{env}"
+    return f"sr-{shorten(domain)}-{shorten(project)}-{shorten(team)}-{shorten(persona)}-{CATEGORY_ABBR.get(category, category[:3])}-{env}"
 
 
 # ===========================================
@@ -249,9 +533,9 @@ def generate_group_role(domain, project, team, persona, category, env):
 
 def gap_analysis(persona, category, roles):
     missing = []
-    if persona == "data-scientist" and "Synapse Artifact User" not in roles:
+    if persona == "data-scientist" and category == "synapse" and "Synapse Artifact User" not in roles:
         missing.append("Synapse Artifact User conseillé pour les DS")
-    if persona == "data-engineer" and "Synapse Linked Data Manager" not in roles:
+    if persona == "data-engineer" and category == "synapse" and "Synapse Linked Data Manager" not in roles:
         missing.append("Synapse Linked Data Manager conseillé pour les DE")
     return missing
 
@@ -261,26 +545,30 @@ def gap_analysis(persona, category, roles):
 # ===========================================
 
 def best_practice_checks(df):
+    if df is None or df.empty:
+        return []
+
     checks = []
 
-    # 1. Trop de permissions par GRT
-    bloated = df.groupby("GRT")["Rôle"].count()
-    for grt, count in bloated.items():
+    # 1. Trop de permissions par ST
+    bloated = df.groupby(["Env", "GRT"])["Rôle"].count()
+    for (env, st), count in bloated.items():
         if count > 35:
-            checks.append(f"⚠️ {grt} contient {count} permissions (role bloat).")
+            checks.append(f"⚠️ {st} contient {count} permissions (role bloat) sur {env}.")
 
     # 2. PIM requis
-    for _, row in df[df["Criticité"].str.contains("Critique")].iterrows():
-        checks.append(f"🔒 Rôle critique sans PIM : {row['Rôle']} ({row['Persona']})")
+    critical_mask = df["Criticité"].fillna("").str.contains("Critique")
+    for _, row in df[critical_mask].iterrows():
+        checks.append(f"🔒 Rôle critique sans PIM : {row['Rôle']} ({row['Persona']} - {row['Env']})")
 
     # 3. Storage Owner
     for _, row in df[df["Rôle"] == "Storage Blob Data Owner"].iterrows():
-        checks.append(f"⚠️ Storage Blob Data Owner accordé à {row['Persona']} — très puissant.")
+        checks.append(f"⚠️ Storage Blob Data Owner accordé à {row['Persona']} ({row['Env']}) — très puissant.")
 
     # 4. Key Vault access
     kv = df[df["Rôle"] == "Key Vault Secrets Officer"]
     for _, row in kv.iterrows():
-        checks.append(f"⚠️ Key Vault Secrets Officer très sensible : {row['Persona']}")
+        checks.append(f"⚠️ Key Vault Secrets Officer très sensible : {row['Persona']} ({row['Env']})")
 
     return checks
 
@@ -289,54 +577,768 @@ def best_practice_checks(df):
 #   GENERATION DU TABLEAU (inclut df_grouped)
 # ===========================================
 
-def generate_table(domain, project, team, env, personas):
+def generate_table(domain, project, team, personas, envs=None):
     raw_rows = []
     warnings = []
     gaps = []
+    personas = personas or []
+    envs = envs or DEFAULT_ENVIRONMENTS
+    catalog_warnings = set()
+    constraint_notices = set()
 
     for persona in personas:
         persona_roles = PERSONA_BUNDLES.get(persona, {}).get("roles", {})
-        grt = generate_group_profile(domain, project, team, persona, env)
-
-        if len(grt) > 63:
-            warnings.append(f"GRT trop long ({len(grt)}): {grt}")
 
         for cat, roles in persona_roles.items():
             gaps += gap_analysis(persona, cat, roles)
 
-        for category, role_list in persona_roles.items():
-            grr = generate_group_role(domain, project, team, persona, category, env)
-            if len(grr) > 63:
-                warnings.append(f"GRR trop long ({len(grr)}): {grr}")
+        for env in envs:
+            grt = generate_group_profile(domain, project, team, persona, env)
 
-            for role in role_list:
-                raw_rows.append({
-                    "Persona": persona,
-                    "GRT": grt,
-                    "GRR": grr,
-                    "Catégorie": category,
-                    "Rôle": role,
-                    "Scope recommandé": determine_scope(category, role),
-                    "Niveau d’accès": determine_access_model(category, role),
-                    "Criticité": determine_criticality(role),
-                    "Len(GRT)": len(grt),
-                    "Len(GRR)": len(grr)
-                })
+            if len(grt) > 63:
+                warnings.append(f"GRT trop long ({len(grt)}): {grt}")
+
+            for category, role_list in persona_roles.items():
+                grr = generate_group_role(domain, project, team, persona, category, env)
+                if len(grr) > 63:
+                    warnings.append(f"GRR trop long ({len(grr)}): {grr}")
+
+                for role in role_list:
+                    if not role_exists_in_catalog(category, role):
+                        key = (persona, category, role)
+                        if key not in catalog_warnings:
+                            catalog_warnings.add(key)
+                            warnings.append(
+                                f"{persona}: rôle '{role}' introuvable dans le catalogue Azure '{category}'."
+                            )
+                        continue
+
+                    if not role_allowed_in_env(category, role, env):
+                        constraint = get_env_constraint(category, role) or {}
+                        allowed = constraint.get("only")
+                        excluded = constraint.get("exclude")
+                        note = constraint.get("note", "")
+                        key = (persona, category, role, env)
+                        if key not in constraint_notices:
+                            constraint_notices.add(key)
+                            if allowed:
+                                allowed_txt = ", ".join(allowed)
+                                warnings.append(
+                                    f"{persona}: rôle '{role}' ({category}) limité aux envs {allowed_txt}; ignoré pour {env}. {note}".strip()
+                                )
+                            elif excluded:
+                                excluded_txt = ", ".join(excluded)
+                                warnings.append(
+                                    f"{persona}: rôle '{role}' ({category}) interdit sur {excluded_txt}; ignoré pour {env}. {note}".strip()
+                                )
+                            else:
+                                warnings.append(
+                                    f"{persona}: rôle '{role}' ({category}) restreint pour {env}. {note}".strip()
+                                )
+                        continue
+
+                    raw_rows.append({
+                        "Env": env,
+                        "Persona": persona,
+                        "GRT": grt,
+                        "GRR": grr,
+                        "Catégorie": category,
+                        "Rôle": role,
+                        "Scope recommandé": determine_scope(category, role),
+                        "Niveau d’accès": determine_access_model(category, role),
+                        "Criticité": determine_criticality(role),
+                        "Len(GRT)": len(grt),
+                        "Len(GRR)": len(grr)
+                    })
 
     df_raw = pd.DataFrame(raw_rows)
 
-    # === GROUPBY : regroupe les rôles par catégorie ===
+    if df_raw.empty:
+        columns = [
+            "Env",
+            "Persona",
+            "GRT",
+            "GRR",
+            "Catégorie",
+            "Rôle",
+            "Scope recommandé",
+            "Niveau d’accès",
+            "Criticité",
+            "Len(GRT)",
+            "Len(GRR)"
+        ]
+        return pd.DataFrame(columns=columns), warnings, gaps
+
+    # === REGROUPEMENT POUR AGRÉGER LES RÔLES ===
     df_grouped = (
-        df_raw.groupby([
-            "Persona", "GRT", "GRR", "Catégorie",
-            "Scope recommandé", "Niveau d’accès",
-            "Criticité", "Len(GRT)", "Len(GRR)"
-        ])
-        .agg({"Rôle": lambda x: ", ".join(sorted(set(x)))})
+        df_raw
+        .groupby(["Env", "Persona", "GRT", "GRR", "Catégorie"])
+        .agg({
+            "Rôle": lambda x: ", ".join(sorted(set(x))),
+            "Scope recommandé": lambda x: ", ".join(sorted(set(x))),
+            "Niveau d’accès": lambda x: ", ".join(sorted(set(x))),
+            "Criticité": lambda x: ", ".join(sorted(set(x))),
+            "Len(GRT)": "first",
+            "Len(GRR)": "first",
+        })
         .reset_index()
     )
 
+    df_grouped = df_grouped[
+        [
+            "Env",
+            "Persona",
+            "GRT",
+            "GRR",
+            "Catégorie",
+            "Rôle",
+            "Scope recommandé",
+            "Niveau d’accès",
+            "Criticité",
+            "Len(GRT)",
+            "Len(GRR)"
+        ]
+    ]
+
     return df_grouped, warnings, gaps
+
+# ===========================================
+#   EXPORT MERMAID
+# ===========================================
+def export_mermaid(df):
+    if df.empty:
+        return "graph TD"
+
+    lines = ["graph TD"]
+
+    for env in df["Env"].unique():
+        env_block = df[df["Env"] == env]
+        lines.append(f"    subgraph {env}")
+
+        for persona in env_block["Persona"].unique():
+            persona_id = f"{env}_{persona}".replace("-", "_")
+            lines.append(f'        {persona_id}["Persona: {persona}"]')
+
+            # GRT unique du persona
+            grt = env_block[env_block["Persona"] == persona]["GRT"].iloc[0]
+            grt_id = f"{env}_{grt}".replace("-", "_")
+            lines.append(f'        {persona_id} --> {grt_id}["{grt}"]')
+
+            persona_df = env_block[env_block["Persona"] == persona]
+            for _, row in persona_df.iterrows():
+                grr_id = f"{env}_{row['GRR']}".replace("-", "_")
+                roles = row["Rôle"].replace(",", "<br>")
+                label = f"{row['Catégorie']}<br>{roles}"
+                lines.append(f'        {grt_id} --> {grr_id}["{label}"]')
+
+        lines.append("    end")
+
+    return "\n".join(lines)
+# ===========================================
+#   EXPORT DRAWIO
+# ===========================================
+
+def export_drawio(df):
+    """
+    Génère un diagramme Draw.io entièrement stylé Azure :
+    - swimlanes par persona
+    - icônes Azure officielles
+    - criticité colorée
+    - annotation PIM auto
+    - 1 feuille par environnement
+    """
+
+    def clean_value(value):
+        if value is None:
+            return ""
+        value = str(value).replace("<br/>", "\n").replace("<br>", "\n")
+        return html.escape(value, quote=True).replace("\n", "&#xa;")
+
+    def cell(id, value, x, y, w, h, style, parent="1"):
+        safe_value = clean_value(value)
+        return f"""
+        <mxCell id="{id}" value="{safe_value}" style="{style}" vertex="1" parent="{parent}">
+            <mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" as="geometry"/>
+        </mxCell>
+        """
+
+    def edge(id, source, target, parent="1"):
+        return f"""
+        <mxCell id="{id}" edge="1" source="{source}" target="{target}" parent="{parent}">
+            <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        """
+
+    def build_env_diagram(env_df, env, diagram_idx):
+        xml_cells = []
+        edges = []
+        swimlane_x = 20
+        swimlane_width = 1600
+        lane_margin = 40
+        current_y = 20
+        row_gap = 130
+        header_offset = 200
+        node_height = 80
+        edge_id = 9000
+
+        personas = env_df["Persona"].unique()
+
+        for persona in personas:
+            dfp = env_df[env_df["Persona"] == persona]
+            row_count = max(len(dfp), 1)
+            lane_height = max(320, header_offset + row_count * row_gap + 60)
+            lane_top = current_y
+
+            swimlane_style = "swimlane;fontSize=14;horizontal=0;rounded=1;container=1;collapsible=0;"
+            lane_id = f"lane_{env}_{persona}"
+            xml_cells.append(cell(lane_id, f"Persona: {persona}", swimlane_x, lane_top, swimlane_width, lane_height, swimlane_style))
+
+            def lane_cell(cell_id, value, abs_x, abs_y, w, h, style):
+                rel_x = abs_x - swimlane_x
+                rel_y = abs_y - lane_top
+                xml_cells.append(cell(cell_id, value, rel_x, rel_y, w, h, style, parent=lane_id))
+
+            grt_value = dfp["GRT"].iloc[0]
+            grt_id = f"grt_{env}_{persona}"
+            grt_style = f"shape={SHAPE_GRT};whiteSpace=wrap;html=1;strokeColor=#004c99;fillColor=#e6f2ff;fontSize=13;"
+            lane_cell(grt_id, f"ST : {grt_value}", swimlane_x + 240, lane_top + 100, 220, 80, grt_style)
+
+            persona_id = f"persona_{env}_{persona}"
+            persona_style = f"shape={SHAPE_PERSONA};whiteSpace=wrap;html=1;fontStyle=1;strokeColor=#0050ef;fillColor=#edf7ff;"
+            lane_cell(persona_id, f"{persona} ({env})", swimlane_x + 20, lane_top + 100, 200, 80, persona_style)
+
+            edges.append(edge(edge_id, persona_id, grt_id, parent=lane_id)); edge_id += 1
+
+            y_cursor = lane_top + header_offset
+
+            for idx, row in dfp.reset_index(drop=True).iterrows():
+                cat = row["Catégorie"]
+                grr = row["GRR"]
+                role = row["Rôle"]
+                criticite = row["Criticité"]
+                is_pim = any(r.strip() in PIM_REQUIRED for r in role.split(","))
+
+                label = f"{cat} : {role}"
+                if is_pim:
+                    label += " (PIM)"
+
+                color = CRIT_COLORS.get(criticite, "#ffffff")
+
+                sr_id = f"sr_{env}_{persona}_{cat}_{idx}"
+                sr_style = f"shape={SHAPE_GRR};whiteSpace=wrap;html=1;fontSize=12;strokeColor=#004c99;fillColor=#f8fbff;"
+                lane_cell(sr_id, f"SR : {grr}", swimlane_x + 500, y_cursor, 240, node_height, sr_style)
+
+                resource_id = f"resource_{env}_{persona}_{cat}_{idx}"
+                resource_label = cat.replace("_", " ").title()
+                icon_path = AZURE_ICON_PATHS.get(cat, DEFAULT_AZURE_ICON)
+                resource_style = (
+                    "shape=image;whiteSpace=wrap;html=1;"
+                    "verticalLabelPosition=bottom;labelPosition=center;"
+                    "verticalAlign=top;align=center;imageAspect=1;"
+                    f"image={icon_path};fontSize=12;"
+                )
+                lane_cell(resource_id, resource_label, swimlane_x + 780, y_cursor - 10, 150, 110, resource_style)
+
+                role_id = f"role_{env}_{persona}_{cat}_{idx}"
+                style_role = f"rounded=1;whiteSpace=wrap;html=1;fillColor={color};strokeColor=#333333;fontSize=12;"
+                lane_cell(role_id, label, swimlane_x + 1040, y_cursor, 320, node_height, style_role)
+
+                edges.append(edge(edge_id, grt_id, sr_id, parent=lane_id)); edge_id += 1
+                edges.append(edge(edge_id, sr_id, resource_id, parent=lane_id)); edge_id += 1
+                edges.append(edge(edge_id, resource_id, role_id, parent=lane_id)); edge_id += 1
+
+                y_cursor += row_gap
+
+            current_y += lane_height + lane_margin
+
+        diagram = f"""
+        <diagram id="env_{diagram_idx}" name="{env.upper()}">
+            <mxGraphModel>
+                <root>
+                    <mxCell id="0"/>
+                    <mxCell id="1" parent="0"/>
+                    {''.join(xml_cells)}
+                    {''.join(edges)}
+                </root>
+            </mxGraphModel>
+        </diagram>
+        """
+        return diagram
+
+    if df.empty:
+        return """
+        <mxfile host="app.diagrams.net">
+            <diagram id="empty" name="RBAC">
+                <mxGraphModel>
+                    <root>
+                        <mxCell id="0"/>
+                        <mxCell id="1" parent="0"/>
+                    </root>
+                </mxGraphModel>
+            </diagram>
+        </mxfile>
+        """
+
+    diagrams = []
+    for idx, env in enumerate(df["Env"].unique()):
+        env_df = df[df["Env"] == env]
+        if env_df.empty:
+            continue
+        diagrams.append(build_env_diagram(env_df, env, idx))
+
+    drawio = f"""
+    <mxfile host="app.diagrams.net">
+        {''.join(diagrams)}
+    </mxfile>
+    """
+
+    return drawio
+
+
+# ===========================================
+#   EXPORT VISIO (VSDX)
+# ===========================================
+
+
+def export_visio(df):
+    """Construit un fichier .vsdx (format Visio 2013+) basé sur la doc officielle
+    https://learn.microsoft.com/office/client-developer/visio/visio-file-format-reference"""
+    if df.empty:
+        return None
+
+    builder = VisioPackageBuilder()
+
+    for env in df["Env"].unique():
+        env_df = df[df["Env"] == env]
+        page_xml = build_visio_page(env, env_df)
+        builder.add_page(env, page_xml)
+
+    return builder.build()
+
+
+VISIO_NS = "http://schemas.microsoft.com/office/visio/2012/main"
+REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+
+def ns(tag):
+    return f"{{{VISIO_NS}}}{tag}"
+
+
+def visio_color(hex_color):
+    if not hex_color:
+        return "RGB(255,255,255)"
+    value = hex_color.lstrip("#")
+    if len(value) != 6:
+        return "RGB(255,255,255)"
+    r = int(value[0:2], 16)
+    g = int(value[2:4], 16)
+    b = int(value[4:6], 16)
+    return f"RGB({r},{g},{b})"
+
+
+def sanitize_visio_text(text):
+    if not text:
+        return ""
+    return str(text)
+
+
+def build_visio_page(env, env_df):
+    personas = []
+    for persona in env_df["Persona"].unique():
+        block = env_df[env_df["Persona"] == persona].reset_index(drop=True)
+        personas.append((persona, block))
+
+    base_height = 2.5  # marge haute + titre
+    row_gap = 1.1
+    header_height = 1.2
+    lane_gap = 0.8
+    for _, block in personas:
+        block_rows = max(len(block), 1)
+        base_height += header_height + block_rows * row_gap + lane_gap
+
+    page_height = max(8.5, base_height)
+    page_width = 17.0
+    current_top = page_height - 0.8
+    shape_id = 1
+    shapes = []
+
+    columns = {
+        "persona": {"x": 1.5, "width": 1.8},
+        "grt": {"x": 4.2, "width": 2.2},
+        "sr": {"x": 7.4, "width": 2.3},
+        "resource": {"x": 10.2, "width": 2.0},
+        "role": {"x": 13.4, "width": 3.2},
+    }
+
+    def add_shape(shape):
+        nonlocal shape_id
+        shape["id"] = shape_id
+        shapes.append(shape)
+        shape_id += 1
+        return shape_id - 1
+
+    def rect_shape(pin_x, pin_y, width, height, text, fill, stroke="#004c99", font_size=10, bold=False, rounding=0.15):
+        return {
+            "type": "rect",
+            "pin_x": pin_x,
+            "pin_y": pin_y,
+            "width": width,
+            "height": height,
+            "text": text,
+            "fill": fill,
+            "stroke": stroke,
+            "font_size": font_size,
+            "bold": bold,
+            "rounding": rounding,
+        }
+
+    def line_shape(pin_x, pin_y, width, text=""):
+        return {
+            "type": "line",
+            "pin_x": pin_x,
+            "pin_y": pin_y,
+            "width": max(width, 0.2),
+            "height": 0.05,
+            "text": text,
+            "stroke": "#004c99",
+        }
+
+    title_shape = rect_shape(
+        pin_x=page_width / 2,
+        pin_y=page_height - 0.4,
+        width=6.0,
+        height=0.8,
+        text=f"Plan RBAC – {env.upper()}",
+        fill="#e6f2ff",
+        font_size=12,
+        bold=True,
+    )
+    add_shape(title_shape)
+
+    for persona, block in personas:
+        block_rows = max(len(block), 1)
+        block_height = header_height + block_rows * row_gap
+        persona_center = current_top - header_height / 2
+
+        persona_text = f"Persona: {persona}"
+        persona_shape = rect_shape(
+            pin_x=columns["persona"]["x"],
+            pin_y=persona_center,
+            width=columns["persona"]["width"],
+            height=0.9,
+            text=persona_text,
+            fill="#edf7ff",
+            stroke="#0050ef",
+            font_size=10,
+            bold=True,
+        )
+        persona_id = add_shape(persona_shape)
+
+        grt_value = block["GRT"].iloc[0]
+        grt_shape = rect_shape(
+            pin_x=columns["grt"]["x"],
+            pin_y=persona_center,
+            width=columns["grt"]["width"],
+            height=0.9,
+            text=f"ST : {grt_value}",
+            fill="#e6f2ff",
+            stroke="#004c99",
+            font_size=10,
+            bold=True,
+        )
+        grt_id = add_shape(grt_shape)
+
+        link_len = columns["grt"]["x"] - columns["persona"]["x"] - (columns["persona"]["width"] + columns["grt"]["width"]) / 2
+        persona_link = line_shape(
+            pin_x=columns["persona"]["x"] + (columns["persona"]["width"] / 2) + link_len / 2,
+            pin_y=persona_center,
+            width=link_len,
+        )
+        add_shape(persona_link)
+
+        row_base = persona_center - 0.8
+        for idx, row in block.iterrows():
+            row_y = row_base - idx * row_gap
+            category = row["Catégorie"]
+            grr = row["GRR"]
+            role_label = row["Rôle"].replace(",", "\n")
+            criticity = row["Criticité"]
+            is_pim = "PIM" in criticity or any(r.strip() in PIM_REQUIRED for r in row["Rôle"].split(","))
+            role_text = f"{category}\n{role_label}"
+            if is_pim and "(PIM)" not in role_text:
+                role_text += "\n(PIM)"
+
+            sr_shape = rect_shape(
+                pin_x=columns["sr"]["x"],
+                pin_y=row_y,
+                width=columns["sr"]["width"],
+                height=0.8,
+                text=f"SR : {grr}",
+                fill="#f6f9ff",
+                stroke="#004c99",
+                font_size=9,
+            )
+            sr_id = add_shape(sr_shape)
+
+            resource_color = CATEGORY_COLOR.get(category, "#f2f2f2")
+            resource_shape = rect_shape(
+                pin_x=columns["resource"]["x"],
+                pin_y=row_y,
+                width=columns["resource"]["width"],
+                height=0.8,
+                text=category.replace("_", " ").title(),
+                fill=resource_color,
+                stroke="#1e1e1e",
+                font_size=9,
+                bold=True,
+            )
+            resource_id = add_shape(resource_shape)
+
+            crit_color = CRIT_COLORS.get(criticity, "#ffffff")
+            role_shape = rect_shape(
+                pin_x=columns["role"]["x"],
+                pin_y=row_y,
+                width=columns["role"]["width"],
+                height=0.9,
+                text=role_text,
+                fill=crit_color,
+                stroke="#333333",
+                font_size=9,
+            )
+            role_id = add_shape(role_shape)
+
+            link_sr = columns["sr"]["x"] - columns["grt"]["x"] - (columns["grt"]["width"] + columns["sr"]["width"]) / 2
+            sr_link = line_shape(
+                pin_x=columns["grt"]["x"] + (columns["grt"]["width"] / 2) + link_sr / 2,
+                pin_y=row_y,
+                width=link_sr,
+            )
+            add_shape(sr_link)
+
+            link_res = columns["resource"]["x"] - columns["sr"]["x"] - (columns["sr"]["width"] + columns["resource"]["width"]) / 2
+            res_link = line_shape(
+                pin_x=columns["sr"]["x"] + (columns["sr"]["width"] / 2) + link_res / 2,
+                pin_y=row_y,
+                width=link_res,
+            )
+            add_shape(res_link)
+
+            link_role = columns["role"]["x"] - columns["resource"]["x"] - (columns["resource"]["width"] + columns["role"]["width"]) / 2
+            role_link = line_shape(
+                pin_x=columns["resource"]["x"] + (columns["resource"]["width"] / 2) + link_role / 2,
+                pin_y=row_y,
+                width=link_role,
+            )
+            add_shape(role_link)
+
+        current_top -= block_height + lane_gap
+
+    page = ET.Element(ns("PageContents"))
+    page_sheet = ET.SubElement(page, ns("PageSheet"))
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageWidth", "V": str(page_width)})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "PageHeight", "V": str(page_height)})
+    ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwObliqueAngle", "V": "0"})
+
+    shapes_el = ET.SubElement(page, ns("Shapes"))
+    for shape in shapes:
+        shapes_el.append(shape_to_element(shape))
+
+    return ET.tostring(page, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+def shape_to_element(shape):
+    element = ET.Element(ns("Shape"), {"ID": str(shape["id"]), "Type": "Shape"})
+    if shape.get("type") == "line":
+        element.set("OneD", "1")
+    add_cell = lambda name, value: ET.SubElement(element, ns("Cell"), {"N": name, "V": str(value)})
+
+    add_cell("PinX", shape["pin_x"])
+    add_cell("PinY", shape["pin_y"])
+    add_cell("Width", shape.get("width", 1))
+    add_cell("Height", shape.get("height", 0.6))
+    add_cell("Angle", 0)
+    add_cell("LineColor", visio_color(shape.get("stroke", "#004c99")))
+
+    if shape.get("type") == "line":
+        add_cell("EndArrow", 3)
+    else:
+        add_cell("FillForegnd", visio_color(shape.get("fill", "#ffffff")))
+        add_cell("FillPattern", 31)
+        add_cell("Rounding", shape.get("rounding", 0))
+
+    text_value = sanitize_visio_text(shape.get("text", ""))
+    if text_value:
+        char_section = ET.SubElement(element, ns("Section"), {"N": "Character", "IX": "0"})
+        char_row = ET.SubElement(char_section, ns("Row"), {"IX": "0"})
+        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "V": str(shape.get("font_size", 10))})
+        if shape.get("bold"):
+            ET.SubElement(char_row, ns("Cell"), {"N": "Style", "V": "1"})
+        text_el = ET.SubElement(element, ns("Text"))
+        text_el.text = text_value
+
+    geom = ET.SubElement(element, ns("Section"), {"N": "Geometry", "IX": "0"})
+    if shape.get("type") == "line":
+        row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo", "IX": "0"})
+        ET.SubElement(row, ns("Cell"), {"N": "X", "V": "0"})
+        ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
+        row = ET.SubElement(geom, ns("Row"), {"T": "LineTo", "IX": "1"})
+        ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(shape.get("width", 1))})
+        ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
+    else:
+        points = [
+            (0, 0),
+            (shape.get("width", 1), 0),
+            (shape.get("width", 1), shape.get("height", 1)),
+            (0, shape.get("height", 1)),
+            (0, 0),
+        ]
+        for idx, (x, y) in enumerate(points):
+            row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo" if idx == 0 else "LineTo", "IX": str(idx)})
+            ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(x)})
+            ET.SubElement(row, ns("Cell"), {"N": "Y", "V": str(y)})
+
+    return element
+
+
+class VisioPackageBuilder:
+    def __init__(self):
+        self.pages = []
+
+    def add_page(self, env, xml):
+        self.pages.append({"name": env.upper(), "xml": xml})
+
+    def build(self):
+        if not self.pages:
+            return None
+
+        timestamp = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        buffer = io.BytesIO()
+
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("[Content_Types].xml", self._content_types())
+            archive.writestr("_rels/.rels", self._package_rels())
+            archive.writestr("docProps/core.xml", self._core_props(timestamp))
+            archive.writestr("docProps/app.xml", self._app_props())
+            archive.writestr("visio/document.xml", self._document_xml(timestamp))
+            archive.writestr("visio/_rels/document.xml.rels", self._document_rels())
+
+            for idx, page in enumerate(self.pages, start=1):
+                archive.writestr(f"visio/pages/page{idx}.xml", page["xml"])
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".vsdx")
+        tmp.write(buffer.getvalue())
+        tmp.close()
+        return tmp.name
+
+    def _content_types(self):
+        page_overrides = "\n".join(
+            [
+                f'    <Override PartName="/visio/pages/page{idx}.xml" ContentType="application/vnd.ms-visio.page+xml"/>'
+                for idx in range(1, len(self.pages) + 1)
+            ]
+        )
+        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
+    <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
+    <Default Extension=\"xml\" ContentType=\"application/xml\"/>
+    <Override PartName=\"/visio/document.xml\" ContentType=\"application/vnd.ms-visio.document.main+xml\"/>
+    <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>
+    <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>
+{page_overrides}
+</Types>
+"""
+
+    def _package_rels(self):
+        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<Relationships xmlns=\"{PKG_REL_NS}\">
+    <Relationship Id=\"rId1\" Type=\"http://schemas.microsoft.com/visio/2010/relationships/document\" Target=\"visio/document.xml\"/>
+    <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>
+    <Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>
+</Relationships>
+"""
+
+    def _core_props(self, timestamp):
+        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
+    <dc:title>Azure RBAC Blueprint</dc:title>
+    <dc:creator>Azure RBAC Generator</dc:creator>
+    <cp:lastModifiedBy>Azure RBAC Generator</cp:lastModifiedBy>
+    <dcterms:created xsi:type=\"dcterms:W3CDTF\">{timestamp}</dcterms:created>
+    <dcterms:modified xsi:type=\"dcterms:W3CDTF\">{timestamp}</dcterms:modified>
+</cp:coreProperties>
+"""
+
+    def _app_props(self):
+        page_count = len(self.pages)
+        titles = "".join([
+            f"            <vt:lpstr>{page['name']}</vt:lpstr>\n" for page in self.pages
+        ])
+        return f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">
+    <Template>AzureBlueprint</Template>
+    <Pages>{page_count}</Pages>
+    <Application>Microsoft Visio</Application>
+    <HeadingPairs>
+        <vt:vector size=\"2\" baseType=\"variant\">
+            <vt:variant>
+                <vt:lpstr>Pages</vt:lpstr>
+            </vt:variant>
+            <vt:variant>
+                <vt:i4>{page_count}</vt:i4>
+            </vt:variant>
+        </vt:vector>
+    </HeadingPairs>
+    <TitlesOfParts>
+        <vt:vector size=\"{page_count}\" baseType=\"lpstr\">
+{titles}        </vt:vector>
+    </TitlesOfParts>
+    <Company></Company>
+    <AppVersion>16.0</AppVersion>
+</Properties>
+"""
+
+    def _document_xml(self, timestamp):
+        document = ET.Element(ns("VisioDocument"), {"xmlns:r": REL_NS})
+        props = ET.SubElement(document, ns("DocumentProperties"))
+        ET.SubElement(props, ns("Creator")).text = "Azure RBAC Generator"
+        ET.SubElement(props, ns("TimeCreated")).text = timestamp
+        settings = ET.SubElement(document, ns("DocumentSettings"))
+        ET.SubElement(settings, ns("EnableAutoConnect")).text = "0"
+
+        pages = ET.SubElement(document, ns("Pages"))
+        for idx, page in enumerate(self.pages, start=1):
+            page_el = ET.SubElement(
+                pages,
+                ns("Page"),
+                {
+                    "ID": str(idx),
+                    "Name": page["name"],
+                    "NameU": page["name"],
+                    "IsCustomName": "1",
+                    "IsCustomNameU": "1",
+                },
+            )
+            rel = ET.SubElement(page_el, ns("Rel"))
+            rel.set(f"{{{REL_NS}}}id", f"rId{idx}")
+
+        return ET.tostring(document, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+    def _document_rels(self):
+        rels = ET.Element("Relationships", {"xmlns": PKG_REL_NS})
+        for idx in range(1, len(self.pages) + 1):
+            ET.SubElement(
+                rels,
+                "Relationship",
+                {
+                    "Id": f"rId{idx}",
+                    "Type": "http://schemas.microsoft.com/visio/2010/relationships/page",
+                    "Target": f"pages/page{idx}.xml",
+                },
+            )
+
+        return ET.tostring(rels, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
 
 
 # ===========================================
@@ -355,45 +1357,112 @@ def export_csv(df):
 #   INTERFACE GRADIO UI
 # ===========================================
 
-with gr.Blocks(title="Azure RBAC Generator") as app:
+def build_app():
+    with gr.Blocks(title="Azure RBAC Generator") as app:
 
-    gr.Markdown("# 🔧 Générateur Azure RBAC – regroupement des rôles & best practices MS")
+        gr.Markdown("# 🔧 Générateur Azure RBAC – regroupement des rôles & exports Visuels")
 
-    with gr.Row():
-        domain = gr.Textbox(label="Domaine")
-        project = gr.Textbox(label="Projet")
-        team = gr.Textbox(label="Équipe")
-        env = gr.Dropdown(["dev", "qa", "preprod", "prod"], label="Environnement")
+        # ----------------------------
+        #    INPUTS
+        # ----------------------------
+        with gr.Row():
+            domain = gr.Textbox(label="Domaine")
+            project = gr.Textbox(label="Projet")
+            team = gr.Textbox(label="Équipe")
+        with gr.Row():
+            envs = gr.CheckboxGroup(
+                choices=DEFAULT_ENVIRONMENTS,
+                value=DEFAULT_ENVIRONMENTS,
+                label="Environnements cibles",
+                info="Sélectionnez les environnements à générer (tous par défaut)."
+            )
 
-    personas = gr.CheckboxGroup(
-        choices=list(PERSONA_BUNDLES.keys()),
-        label="Personas"
-    )
+        personas = gr.CheckboxGroup(
+            choices=list(PERSONA_BUNDLES.keys()),
+            label="Personas"
+        )
 
-    generate_btn = gr.Button("📊 Générer")
+        # ----------------------------
+        #    BOUTONS
+        # ----------------------------
+        generate_btn = gr.Button("📊 Générer Tableau")
+        export_mermaid_btn = gr.Button("📄 Export Mermaid")
+        export_drawio_btn = gr.Button("📊 Export Draw.io XML")
+        export_visio_btn = gr.Button("📐 Export Visio (.vsdx)")
 
-    df_output = gr.DataFrame(interactive=False, label="Résultat")
-    warnings_box = gr.Markdown()
-    gaps_box = gr.Markdown()
-    bestpractice_box = gr.Markdown()
-    csv_file = gr.File(label="Télécharger CSV")
+        # ----------------------------
+        #    OUTPUTS
+        # ----------------------------
+        df_output = gr.DataFrame(interactive=False, label="Résultat consolidé")
+        warnings_box = gr.Markdown()
+        gaps_box = gr.Markdown()
+        bestpractice_box = gr.Markdown()
+        csv_file = gr.File(label="Télécharger CSV")
 
-    def run(domain, project, team, env, personas):
-        df, warnings, gaps = generate_table(domain, project, team, env, personas)
-        bp = best_practice_checks(df)
+        mermaid_output = gr.Code(label="Diagramme Mermaid", language="markdown")
+        drawio_file = gr.File(label="Télécharger fichier .drawio")
+        visio_file = gr.File(label="Télécharger fichier Visio (.vsdx)")
 
-        warn_text = "✔️ Aucun avertissement." if not warnings else "\n".join([f"- {w}" for w in warnings])
-        gap_text = "✔️ Aucun manque dans les rôles." if not gaps else "\n".join([f"- {g}" for g in gaps])
-        bp_text = "✔️ Aucune anomalie détectée." if not bp else "\n".join([f"- {i}" for i in bp])
+        # ----------------------------
+        #    CALLBACKS
+        # ----------------------------
+        def run(domain, project, team, envs, personas):
+            df, warnings, gaps = generate_table(domain, project, team, personas, envs)
+            bp = best_practice_checks(df)
 
-        csv_path = export_csv(df)
+            warn_text = "✔️ Aucun avertissement." if not warnings else "\n".join([f"- {w}" for w in warnings])
+            gap_text = "✔️ Aucun manque dans les rôles." if not gaps else "\n".join([f"- {g}" for g in gaps])
+            bp_text = "✔️ Aucune anomalie détectée." if not bp else "\n".join([f"- {i}" for i in bp])
 
-        return df, warn_text, gap_text, bp_text, csv_path
+            csv_path = export_csv(df)
 
-    generate_btn.click(
-        run,
-        inputs=[domain, project, team, env, personas],
-        outputs=[df_output, warnings_box, gaps_box, bestpractice_box, csv_file]
-    )
+            return df, warn_text, gap_text, bp_text, csv_path
 
-app.launch()
+        def run_mermaid(domain, project, team, envs, personas):
+            df, _, _ = generate_table(domain, project, team, personas, envs)
+            return export_mermaid(df)
+
+        def run_drawio(domain, project, team, envs, personas):
+            df, _, _ = generate_table(domain, project, team, personas, envs)
+            xml = export_drawio(df)
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".drawio")
+            with open(tmp.name, "w", encoding="utf-8") as f:
+                f.write(xml)
+            return tmp.name
+
+        def run_visio(domain, project, team, envs, personas):
+            df, _, _ = generate_table(domain, project, team, personas, envs)
+            return export_visio(df)
+
+        # ----------------------------
+        #    BINDING DES BOUTONS
+        # ----------------------------
+        generate_btn.click(
+            run,
+            inputs=[domain, project, team, envs, personas],
+            outputs=[df_output, warnings_box, gaps_box, bestpractice_box, csv_file]
+        )
+
+        export_mermaid_btn.click(
+            run_mermaid,
+            inputs=[domain, project, team, envs, personas],
+            outputs=[mermaid_output]
+        )
+
+        export_drawio_btn.click(
+            run_drawio,
+            inputs=[domain, project, team, envs, personas],
+            outputs=[drawio_file]
+        )
+
+        export_visio_btn.click(
+            run_visio,
+            inputs=[domain, project, team, envs, personas],
+            outputs=[visio_file]
+        )
+
+    return app
+
+
+if __name__ == "__main__":
+    build_app().launch()
