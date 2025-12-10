@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import gradio as gr
 import html
@@ -1016,13 +1017,19 @@ def export_visio(df):
             first_df = df[df["Env"] == first_env]
             hydrate_page(base_pages[0], first_env, first_df)
 
-            for env in envs[1:]:
-                env_df = df[df["Env"] == env]
-                new_page = vis.add_page(name=env.upper())
-                # synchroniser l'identifiant de page nouvellement créé
-                latest_page = vis.pages_xml.getroot().findall(ns("Page"))[-1]
-                new_page.page_id = latest_page.attrib.get("ID", "")
-                hydrate_page(new_page, env, env_df)
+        for env in envs[1:]:
+            env_df = df[df["Env"] == env]
+            new_page = vis.add_page(name=env.upper())
+            # synchroniser l'identifiant de page nouvellement créé
+            pages_root = vis.pages_xml.getroot() if vis.pages_xml is not None else None
+            if pages_root is None:
+                vis.load_pages()
+                pages_root = vis.pages_xml.getroot() if vis.pages_xml is not None else None
+            if pages_root is None:
+                raise RuntimeError("Impossible de retrouver la configuration des pages Visio.")
+            latest_page = pages_root.findall(ns("Page"))[-1]
+            new_page.page_id = latest_page.attrib.get("ID", "")
+            hydrate_page(new_page, env, env_df)
 
             vis.save_vsdx(tmp.name)
     finally:
@@ -1033,6 +1040,22 @@ def export_visio(df):
                 pass
 
     return tmp.name
+
+
+def cli_generate_visio(domain, project, team, personas=None, envs=None):
+    """Helper CLI pour générer un Visio sans passer par Gradio."""
+    personas = personas or list(PERSONA_BUNDLES.keys())
+    envs = envs or DEFAULT_ENVIRONMENTS
+    df, warnings, gaps = generate_table(domain, project, team, personas, envs)
+    bp = best_practice_checks(df)
+    visio_path = export_visio(df)
+    return {
+        "path": visio_path,
+        "warnings": warnings,
+        "gaps": gaps,
+        "best_practices": bp,
+        "rows": len(df),
+    }
 
 
 def visio_color(hex_color):
@@ -1474,4 +1497,38 @@ def build_app():
 
 
 if __name__ == "__main__":
-    build_app().launch()
+    parser = argparse.ArgumentParser(description="Générateur Azure RBAC")
+    parser.add_argument("--cli-visio", action="store_true", help="Génère un Visio sans lancer Gradio.")
+    parser.add_argument("--domain", default="demo", help="Nom de domaine pour la génération.")
+    parser.add_argument("--project", default="project", help="Nom du projet.")
+    parser.add_argument("--team", default="team", help="Nom de l'équipe.")
+    parser.add_argument("--personas", nargs="*", help="Liste de personas à inclure.")
+    parser.add_argument("--envs", nargs="*", help="Liste d'environnements à inclure.")
+    args = parser.parse_args()
+
+    if args.cli_visio:
+        result = cli_generate_visio(
+            domain=args.domain,
+            project=args.project,
+            team=args.team,
+            personas=args.personas,
+            envs=args.envs,
+        )
+        if not result.get("path"):
+            print("Aucun Visio généré (tableau vide).")
+        else:
+            print(f"Visio généré: {result['path']} ({result['rows']} lignes)")
+            if result["warnings"]:
+                print("Avertissements:")
+                for warn in result["warnings"]:
+                    print(f" - {warn}")
+            if result["gaps"]:
+                print("Manques détectés:")
+                for gap in result["gaps"]:
+                    print(f" - {gap}")
+            if result["best_practices"]:
+                print("Best practices à corriger:")
+                for bp in result["best_practices"]:
+                    print(f" - {bp}")
+    else:
+        build_app().launch()
