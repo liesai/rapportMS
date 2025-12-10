@@ -1031,6 +1031,7 @@ def build_visio_page(env, env_df):
     page_height = max(12.0, total_height)
     current_top = page_height - 0.7
     shapes = []
+    connectors = []
     shape_id = 1
 
     columns = {
@@ -1064,28 +1065,22 @@ def build_visio_page(env, env_df):
             "stroke_weight": stroke_weight,
         }
 
-    def connector_segment(x_start, x_end, y, color, height=0.18):
-        width = max((x_end - x_start) - 0.4, 0.3)
-        bar = rect_shape(
-            pin_x=x_start + width / 2 + 0.2,
-            pin_y=y,
-            width=width,
-            height=height,
-            text="",
-            fill=color,
-            stroke=color,
-            stroke_weight=height / 5,
-        )
-        add_shape(bar)
-        arrow = arrow_shape(
-            pin_x=x_end - 0.35,
-            pin_y=y,
-            width=0.45,
-            height=0.35,
-            fill=color,
-            stroke=color,
-        )
-        add_shape(arrow)
+    def line_shape(pin_x, pin_y, width, stroke="#004c99", line_weight=0.06):
+        return {
+            "type": "line",
+            "pin_x": pin_x,
+            "pin_y": pin_y,
+            "width": max(width, 0.1),
+            "stroke": stroke,
+            "line_weight": line_weight,
+        }
+
+    def connector_segment(x_start, x_end, y, color, from_shape=None, to_shape=None):
+        width = max(x_end - x_start, 0.3)
+        pin_x = x_start + width / 2
+        line = line_shape(pin_x=pin_x, pin_y=y, width=width, stroke=color)
+        line_id = add_shape(line)
+        connectors.append({"line": line_id, "from": from_shape, "to": to_shape})
 
     def arrow_shape(pin_x, pin_y, width=0.35, height=0.25, fill="#004c99", stroke="#004c99"):
         return {
@@ -1141,7 +1136,7 @@ def build_visio_page(env, env_df):
             bold=True,
             stroke_weight=0.04,
         )
-        add_shape(persona_shape)
+        persona_id = add_shape(persona_shape)
 
         grt_value = block["GRT"].iloc[0]
         grt_shape = rect_shape(
@@ -1156,11 +1151,11 @@ def build_visio_page(env, env_df):
             bold=True,
             stroke_weight=0.04,
         )
-        add_shape(grt_shape)
+        grt_id = add_shape(grt_shape)
 
         persona_end = columns["persona"]["x"] + columns["persona"]["width"] / 2
         grt_start = columns["grt"]["x"] - columns["grt"]["width"] / 2
-        connector_segment(persona_end, grt_start, persona_center, AZURE_BRAND_COLORS["persona_border"])
+        connector_segment(persona_end, grt_start, persona_center, AZURE_BRAND_COLORS["persona_border"], from_shape=persona_id, to_shape=grt_id)
 
         row_start = persona_center - header_height / 2 - 0.6
         if rows == 0:
@@ -1189,7 +1184,7 @@ def build_visio_page(env, env_df):
                 font_size=10,
                 stroke_weight=0.03,
             )
-            add_shape(sr_shape)
+            sr_id = add_shape(sr_shape)
 
             icon_fill = CATEGORY_COLOR.get(category, "#f2f2f2")
             resource_shape = rect_shape(
@@ -1204,7 +1199,7 @@ def build_visio_page(env, env_df):
                 bold=True,
                 stroke_weight=0.03,
             )
-            add_shape(resource_shape)
+            resource_id = add_shape(resource_shape)
 
             crit_color = CRIT_COLORS.get(criticity, "#ffffff")
             if is_pim:
@@ -1220,11 +1215,11 @@ def build_visio_page(env, env_df):
                 font_size=9,
                 stroke_weight=0.03,
             )
-            add_shape(role_shape)
+            role_id = add_shape(role_shape)
 
-            connector_segment(columns["grt"]["x"] + columns["grt"]["width"] / 2, columns["sr"]["x"] - columns["sr"]["width"] / 2, row_y, AZURE_BRAND_COLORS["sr_border"])
-            connector_segment(columns["sr"]["x"] + columns["sr"]["width"] / 2, columns["resource"]["x"] - columns["resource"]["width"] / 2, row_y, icon_fill)
-            connector_segment(columns["resource"]["x"] + columns["resource"]["width"] / 2, columns["role"]["x"] - columns["role"]["width"] / 2, row_y, crit_color)
+            connector_segment(columns["grt"]["x"] + columns["grt"]["width"] / 2, columns["sr"]["x"] - columns["sr"]["width"] / 2, row_y, AZURE_BRAND_COLORS["sr_border"], from_shape=grt_id, to_shape=sr_id)
+            connector_segment(columns["sr"]["x"] + columns["sr"]["width"] / 2, columns["resource"]["x"] - columns["resource"]["width"] / 2, row_y, icon_fill, from_shape=sr_id, to_shape=resource_id)
+            connector_segment(columns["resource"]["x"] + columns["resource"]["width"] / 2, columns["role"]["x"] - columns["role"]["width"] / 2, row_y, crit_color, from_shape=resource_id, to_shape=role_id)
 
             if is_pim:
                 badge_shape = rect_shape(
@@ -1266,6 +1261,25 @@ def build_visio_page(env, env_df):
     shapes_el = ET.SubElement(page, ns("Shapes"))
     for shape in shapes:
         shapes_el.append(shape_to_element(shape))
+
+    if connectors:
+        connects_el = ET.SubElement(page, ns("Connects"))
+        for conn in connectors:
+            line_id = conn.get("line")
+            if conn.get("from"):
+                ET.SubElement(connects_el, ns("Connect"), {
+                    "FromSheet": str(line_id),
+                    "FromCell": "BeginX",
+                    "ToSheet": str(conn["from"]),
+                    "ToCell": "PinX",
+                })
+            if conn.get("to"):
+                ET.SubElement(connects_el, ns("Connect"), {
+                    "FromSheet": str(line_id),
+                    "FromCell": "EndX",
+                    "ToSheet": str(conn["to"]),
+                    "ToCell": "PinX",
+                })
 
     return page, page_width, page_height
 
