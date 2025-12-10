@@ -1390,12 +1390,16 @@ def render_layout_to_page(page_obj, layout, media):
         if definition.get("type") != "rect":
             continue
         visio_shape = media.rectangle.copy(page_obj)
+        visio_shape.line_style_id = 0
+        visio_shape.fill_style_id = 0
+        visio_shape.text_style_id = 0
         visio_shape.width = definition.get("width", 1.0)
         visio_shape.height = definition.get("height", 0.6)
         visio_shape.x = definition.get("pin_x", 0)
         visio_shape.y = definition.get("pin_y", 0)
         visio_shape.line_color = visio_color(definition.get("stroke", "#004c99"))
         visio_shape.fill_color = visio_color(definition.get("fill", "#ffffff"))
+        visio_shape.text_color = "RGB(25,25,25)"
         stroke_weight = definition.get("stroke_weight")
         if stroke_weight:
             visio_shape.line_weight = stroke_weight
@@ -1414,6 +1418,8 @@ def render_layout_to_page(page_obj, layout, media):
         connector_shape = Connect.create(page=page_obj, from_shape=from_shape, to_shape=to_shape)
         if not connector_shape:
             continue
+        connector_shape.line_style_id = 0
+        connector_shape.fill_style_id = 0
         connector_shape.line_color = visio_color(connector.get("color"))
         connector_shape.line_weight = connector.get("line_weight", 0.04)
         connector_shape.end_arrow = True
