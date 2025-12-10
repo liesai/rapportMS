@@ -4,6 +4,7 @@ import gradio as gr
 import html
 import io
 import pandas as pd
+import re
 import shutil
 import tempfile
 import xml.etree.ElementTree as ET
@@ -976,6 +977,7 @@ def export_drawio(df):
 
 VISIO_NS = "http://schemas.microsoft.com/office/visio/2012/main"
 REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+REL_XMLNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 
 def ns(tag):
@@ -1017,19 +1019,19 @@ def export_visio(df):
             first_df = df[df["Env"] == first_env]
             hydrate_page(base_pages[0], first_env, first_df)
 
-        for env in envs[1:]:
-            env_df = df[df["Env"] == env]
-            new_page = vis.add_page(name=env.upper())
-            # synchroniser l'identifiant de page nouvellement créé
-            pages_root = vis.pages_xml.getroot() if vis.pages_xml is not None else None
-            if pages_root is None:
-                vis.load_pages()
+            for env in envs[1:]:
+                env_df = df[df["Env"] == env]
+                new_page = vis.add_page(name=env.upper())
+                # synchroniser l'identifiant de page nouvellement créé
                 pages_root = vis.pages_xml.getroot() if vis.pages_xml is not None else None
-            if pages_root is None:
-                raise RuntimeError("Impossible de retrouver la configuration des pages Visio.")
-            latest_page = pages_root.findall(ns("Page"))[-1]
-            new_page.page_id = latest_page.attrib.get("ID", "")
-            hydrate_page(new_page, env, env_df)
+                if pages_root is None:
+                    vis.load_pages()
+                    pages_root = vis.pages_xml.getroot() if vis.pages_xml is not None else None
+                if pages_root is None:
+                    raise RuntimeError("Impossible de retrouver la configuration des pages Visio.")
+                latest_page = pages_root.findall(ns("Page"))[-1]
+                new_page.page_id = latest_page.attrib.get("ID", "")
+                hydrate_page(new_page, env, env_df)
 
             vis.save_vsdx(tmp.name)
     finally:
@@ -1040,6 +1042,51 @@ def export_visio(df):
                 pass
 
     return tmp.name
+
+
+def _normalize_dash(value):
+    return value.replace("–", "-").replace("—", "-")
+
+
+def _parse_cli_tokens(raw_values):
+    tokens = []
+    for value in raw_values or []:
+        if not value:
+            continue
+        for chunk in re.split(r"[;,]", str(value)):
+            cleaned = chunk.strip()
+            if cleaned:
+                tokens.append(cleaned)
+    return tokens
+
+
+def resolve_cli_personas(raw_values):
+    tokens = _parse_cli_tokens(raw_values)
+    if not tokens:
+        return list(PERSONA_BUNDLES.keys()), []
+
+    valid = []
+    invalid = []
+    for token in tokens:
+        normalized = _normalize_dash(token.strip()).lower()
+        if normalized in PERSONA_BUNDLES:
+            valid.append(normalized)
+        else:
+            invalid.append(token)
+    return valid, invalid
+
+
+def resolve_cli_envs(raw_values):
+    tokens = _parse_cli_tokens(raw_values)
+    if not tokens:
+        return DEFAULT_ENVIRONMENTS
+
+    normalized = []
+    for token in tokens:
+        clean = _normalize_dash(token.strip()).lower()
+        if clean:
+            normalized.append(clean)
+    return normalized or DEFAULT_ENVIRONMENTS
 
 
 def cli_generate_visio(domain, project, team, personas=None, envs=None):
@@ -1332,6 +1379,7 @@ def build_page_contents_tree(page_width, page_height):
 def render_layout_to_page(page_obj, layout, media):
     if not layout:
         return
+    ensure_page_relationships(page_obj)
     page_obj.max_id = 0
     page_obj.width = layout["page_width"]
     page_obj.height = layout["page_height"]
@@ -1369,6 +1417,18 @@ def render_layout_to_page(page_obj, layout, media):
         connector_shape.line_color = visio_color(connector.get("color"))
         connector_shape.line_weight = connector.get("line_weight", 0.04)
         connector_shape.end_arrow = True
+
+
+def ensure_page_relationships(page_obj):
+    if page_obj.rels_xml is not None and page_obj.rels_xml.getroot() is not None:
+        return
+    rels_root = ET.Element(f"{{{REL_XMLNS}}}Relationships")
+    page_obj.rels_xml = ET.ElementTree(rels_root)
+    if not page_obj.rels_xml_filename:
+        rel_filename = Path(page_obj.filename).name + ".rels"
+        rel_path = Path(page_obj.vis.directory) / "visio" / "pages" / "_rels" / rel_filename
+        rel_path.parent.mkdir(parents=True, exist_ok=True)
+        page_obj.rels_xml_filename = str(rel_path)
 
 
 
@@ -1507,12 +1567,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.cli_visio:
+        personas, invalid_personas = resolve_cli_personas(args.personas)
+        envs = resolve_cli_envs(args.envs)
+        if invalid_personas:
+            print("⚠️ Personas ignorés (inconnus): " + ", ".join(invalid_personas))
+        if not personas:
+            print("Aucun persona valide fourni. Utilisez --personas avec des valeurs comme 'data-engineer'.")
+            raise SystemExit(1)
+        print(f"Personas sélectionnés: {', '.join(personas)}")
+        print(f"Environnements: {', '.join(envs)}")
         result = cli_generate_visio(
             domain=args.domain,
             project=args.project,
             team=args.team,
-            personas=args.personas,
-            envs=args.envs,
+            personas=personas,
+            envs=envs,
         )
         if not result.get("path"):
             print("Aucun Visio généré (tableau vide).")
