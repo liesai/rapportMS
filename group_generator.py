@@ -1,14 +1,52 @@
+import contextlib
 import gradio as gr
-import pandas as pd
-import tempfile
 import html
+import io
+import pandas as pd
 import shutil
-from pathlib import Path
+import tempfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
+
 import vsdx
 from vsdx import VisioFile
+from vsdx.connectors import Connect
+from vsdx.media import Media
 
 BASE_DIR = Path(__file__).resolve().parent
+
+
+def suppress_vsdx_geometry_logs():
+    """Empêche les messages debug verbeux de la lib vsdx lors des move/line updates."""
+    try:
+        from vsdx import geometry as geometry_module  # type: ignore
+    except Exception:
+        return
+
+    def _wrap(method):
+        if getattr(method, "_gg_wrapped", False):
+            return method
+
+        def wrapper(*args, **kwargs):
+            with contextlib.redirect_stdout(io.StringIO()):
+                return method(*args, **kwargs)
+
+        setattr(wrapper, "_gg_wrapped", True)
+        return wrapper
+
+    geometry_cls = getattr(geometry_module, "Geometry", None)
+    if geometry_cls:
+        geometry_cls.set_move_to = _wrap(geometry_cls.set_move_to)
+        geometry_cls.set_line_to = _wrap(geometry_cls.set_line_to)
+
+    connect_create = getattr(Connect, "create", None)
+    if isinstance(connect_create, staticmethod):
+        connect_create = connect_create.__func__
+    if connect_create:
+        Connect.create = staticmethod(_wrap(connect_create))
+
+
+suppress_vsdx_geometry_logs()
 
 # ===========================================
 #   ABRÉVIATIONS DES CATÉGORIES
@@ -958,46 +996,63 @@ def export_visio(df):
     if not envs:
         return None
 
-    with VisioFile(tmp.name) as vis:
-        base_pages = list(vis.pages)
-        if not base_pages:
-            raise RuntimeError("Le template Visio ne contient aucune page de base.")
+    media = Media()
+    try:
+        with VisioFile(tmp.name) as vis:
+            base_pages = list(vis.pages)
+            if not base_pages:
+                raise RuntimeError("Le template Visio ne contient aucune page de base.")
 
-        # conserver la première page comme gabarit, supprimer le reste
-        for extra_page in base_pages[1:]:
-            vis.remove_page_by_index(extra_page.index_num)
+            # conserver la première page comme gabarit, supprimer le reste
+            for extra_page in base_pages[1:]:
+                vis.remove_page_by_index(extra_page.index_num)
 
-        def hydrate_page(page_obj, env_name, env_df):
-            page_element, page_width, page_height = build_visio_page(env_name, env_df)
-            page_obj.name = env_name.upper()
-            page_obj.width = page_width
-            page_obj.height = page_height
-            page_obj.xml = ET.ElementTree(page_element)
+            def hydrate_page(page_obj, env_name, env_df):
+                layout = build_visio_layout(env_name, env_df)
+                page_obj.name = env_name.upper()
+                render_layout_to_page(page_obj, layout, media)
 
-        first_env = envs[0]
-        first_df = df[df["Env"] == first_env]
-        hydrate_page(base_pages[0], first_env, first_df)
+            first_env = envs[0]
+            first_df = df[df["Env"] == first_env]
+            hydrate_page(base_pages[0], first_env, first_df)
 
-        for env in envs[1:]:
-            env_df = df[df["Env"] == env]
-            new_page = vis.add_page(name=env.upper())
-            # synchroniser l'identifiant de page nouvellement créé
-            latest_page = vis.pages_xml.getroot().findall(ns("Page"))[-1]
-            new_page.page_id = latest_page.attrib.get("ID", "")
-            hydrate_page(new_page, env, env_df)
+            for env in envs[1:]:
+                env_df = df[df["Env"] == env]
+                new_page = vis.add_page(name=env.upper())
+                # synchroniser l'identifiant de page nouvellement créé
+                latest_page = vis.pages_xml.getroot().findall(ns("Page"))[-1]
+                new_page.page_id = latest_page.attrib.get("ID", "")
+                hydrate_page(new_page, env, env_df)
 
-        vis.save_vsdx(tmp.name)
+            vis.save_vsdx(tmp.name)
+    finally:
+        if hasattr(media, "_media_vsdx"):
+            try:
+                media._media_vsdx.close_vsdx()
+            except Exception:
+                pass
 
     return tmp.name
 
 
 def visio_color(hex_color):
     if not hex_color:
-        return "#ffffff"
-    value = hex_color.lstrip("#")
+        return "RGB(255,255,255)"
+    raw = str(hex_color).strip()
+    if not raw:
+        return "RGB(255,255,255)"
+    if raw.lower().startswith("rgb"):
+        return raw
+    value = raw.lstrip("#")
     if len(value) != 6:
-        return "#ffffff"
-    return f"#{value.lower()}"
+        return "RGB(255,255,255)"
+    try:
+        r = int(value[0:2], 16)
+        g = int(value[2:4], 16)
+        b = int(value[4:6], 16)
+    except ValueError:
+        return "RGB(255,255,255)"
+    return f"RGB({r},{g},{b})"
 
 
 def sanitize_visio_text(text):
@@ -1006,7 +1061,7 @@ def sanitize_visio_text(text):
     return str(text)
 
 
-def build_visio_page(env, env_df):
+def build_visio_layout(env, env_df):
     personas = []
     for persona in env_df["Persona"].unique():
         block = env_df[env_df["Persona"] == persona].reset_index(drop=True)
@@ -1065,33 +1120,15 @@ def build_visio_page(env, env_df):
             "stroke_weight": stroke_weight,
         }
 
-    def line_shape(pin_x, pin_y, width, stroke="#004c99", line_weight=0.06):
-        return {
-            "type": "line",
-            "pin_x": pin_x,
-            "pin_y": pin_y,
-            "width": max(width, 0.1),
-            "stroke": stroke,
-            "line_weight": line_weight,
-        }
-
     def connector_segment(x_start, x_end, y, color, from_shape=None, to_shape=None):
-        width = max(x_end - x_start, 0.3)
-        pin_x = x_start + width / 2
-        line = line_shape(pin_x=pin_x, pin_y=y, width=width, stroke=color)
-        line_id = add_shape(line)
-        connectors.append({"line": line_id, "from": from_shape, "to": to_shape})
-
-    def arrow_shape(pin_x, pin_y, width=0.35, height=0.25, fill="#004c99", stroke="#004c99"):
-        return {
-            "type": "arrow",
-            "pin_x": pin_x,
-            "pin_y": pin_y,
-            "width": width,
-            "height": height,
-            "fill": fill,
-            "stroke": stroke,
-        }
+        connectors.append(
+            {
+                "from": from_shape,
+                "to": to_shape,
+                "color": color,
+                "line_weight": 0.04,
+            }
+        )
 
     title_shape = rect_shape(
         pin_x=page_width / 2,
@@ -1238,6 +1275,15 @@ def build_visio_page(env, env_df):
 
         current_top -= block_height + lane_gap
 
+    return {
+        "page_width": page_width,
+        "page_height": page_height,
+        "shapes": shapes,
+        "connectors": connectors,
+    }
+
+
+def build_page_contents_tree(page_width, page_height):
     page = ET.Element(ns("PageContents"), {"xmlns:r": REL_NS})
     page_sheet = ET.SubElement(page, ns("PageSheet"), {"LineStyle": "0", "FillStyle": "0", "TextStyle": "0"})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "PageWidth", "V": str(page_width)})
@@ -1257,116 +1303,49 @@ def build_visio_page(env, env_df):
     ET.SubElement(page_sheet, ns("Cell"), {"N": "ShdwScaleFactor", "V": "1"})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "DrawingResizeType", "V": "1"})
     ET.SubElement(page_sheet, ns("Cell"), {"N": "PageShapeSplit", "V": "1"})
-
-    shapes_el = ET.SubElement(page, ns("Shapes"))
-    for shape in shapes:
-        shapes_el.append(shape_to_element(shape))
-
-    if connectors:
-        connects_el = ET.SubElement(page, ns("Connects"))
-        for conn in connectors:
-            line_id = conn.get("line")
-            if conn.get("from"):
-                ET.SubElement(connects_el, ns("Connect"), {
-                    "FromSheet": str(line_id),
-                    "FromCell": "BeginX",
-                    "ToSheet": str(conn["from"]),
-                    "ToCell": "PinX",
-                })
-            if conn.get("to"):
-                ET.SubElement(connects_el, ns("Connect"), {
-                    "FromSheet": str(line_id),
-                    "FromCell": "EndX",
-                    "ToSheet": str(conn["to"]),
-                    "ToCell": "PinX",
-                })
-
-    return page, page_width, page_height
+    return ET.ElementTree(page)
 
 
-def shape_to_element(shape):
-    element = ET.Element(ns("Shape"), {"ID": str(shape["id"]), "Type": "Shape"})
-    if shape.get("type") == "line":
-        element.set("OneD", "1")
-    add_cell = lambda name, value: ET.SubElement(element, ns("Cell"), {"N": name, "V": str(value)})
+def render_layout_to_page(page_obj, layout, media):
+    if not layout:
+        return
+    page_obj.max_id = 0
+    page_obj.width = layout["page_width"]
+    page_obj.height = layout["page_height"]
+    page_obj.xml = build_page_contents_tree(layout["page_width"], layout["page_height"])
 
-    width = shape.get("width", 1)
-    height = shape.get("height", 0.6)
-    add_cell("PinX", shape["pin_x"])
-    add_cell("PinY", shape["pin_y"])
-    add_cell("Width", width)
-    add_cell("Height", height)
-    add_cell("LocPinX", width / 2)
-    add_cell("LocPinY", height / 2)
-    add_cell("Angle", 0)
-    add_cell("LineColor", visio_color(shape.get("stroke", "#004c99")))
-
-    shape_type = shape.get("type")
-
-    if shape_type == "line":
-        add_cell("LineWeight", shape.get("line_weight", 0.04))
-        if shape.get("arrow", True):
-            add_cell("EndArrow", 3)
-        else:
-            add_cell("EndArrow", 0)
-    else:
-        add_cell("FillForegnd", visio_color(shape.get("fill", "#ffffff")))
-        add_cell("FillPattern", 31)
-        add_cell("Rounding", shape.get("rounding", 0))
-        stroke_weight = shape.get("stroke_weight")
+    shape_map = {}
+    for definition in layout.get("shapes", []):
+        if definition.get("type") != "rect":
+            continue
+        visio_shape = media.rectangle.copy(page_obj)
+        visio_shape.width = definition.get("width", 1.0)
+        visio_shape.height = definition.get("height", 0.6)
+        visio_shape.x = definition.get("pin_x", 0)
+        visio_shape.y = definition.get("pin_y", 0)
+        visio_shape.line_color = visio_color(definition.get("stroke", "#004c99"))
+        visio_shape.fill_color = visio_color(definition.get("fill", "#ffffff"))
+        stroke_weight = definition.get("stroke_weight")
         if stroke_weight:
-            add_cell("LineWeight", stroke_weight)
+            visio_shape.line_weight = stroke_weight
+        rounding = definition.get("rounding")
+        if rounding is not None:
+            visio_shape.set_cell_value("Rounding", str(rounding))
+        text_value = sanitize_visio_text(definition.get("text", ""))
+        visio_shape.text = text_value
+        shape_map[definition["id"]] = visio_shape
 
-    text_value = sanitize_visio_text(shape.get("text", ""))
-    if text_value:
-        char_section = ET.SubElement(element, ns("Section"), {"N": "Character", "IX": "0"})
-        char_row = ET.SubElement(char_section, ns("Row"), {"IX": "0"})
-        font_value = shape.get("font", "Calibri")
-        size_pt = float(shape.get("font_size", 10))
-        size_in = size_pt / 72.0
-        ET.SubElement(char_row, ns("Cell"), {"N": "Font", "V": font_value})
-        ET.SubElement(char_row, ns("Cell"), {"N": "Size", "U": "IN", "V": f"{size_in:.4f}"})
-        if shape.get("bold"):
-            ET.SubElement(char_row, ns("Cell"), {"N": "Style", "V": "1"})
-        text_el = ET.SubElement(element, ns("Text"))
-        text_el.text = text_value
-
-    geom = ET.SubElement(element, ns("Section"), {"N": "Geometry", "IX": "0"})
-    if shape_type == "line":
-        row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo", "IX": "0"})
-        ET.SubElement(row, ns("Cell"), {"N": "X", "V": "0"})
-        ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
-        row = ET.SubElement(geom, ns("Row"), {"T": "LineTo", "IX": "1"})
-        ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(shape.get("width", 1))})
-        ET.SubElement(row, ns("Cell"), {"N": "Y", "V": "0"})
-    elif shape_type == "arrow":
-        w = width
-        h = height
-        points = [
-            (0, h / 2),
-            (w * 0.75, h),
-            (w, h / 2),
-            (w * 0.75, 0),
-            (0, h / 2)
-        ]
-        for idx, (x, y) in enumerate(points):
-            row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo" if idx == 0 else "LineTo", "IX": str(idx)})
-            ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(x)})
-            ET.SubElement(row, ns("Cell"), {"N": "Y", "V": str(y)})
-    else:
-        points = [
-            (0, 0),
-            (shape.get("width", 1), 0),
-            (shape.get("width", 1), shape.get("height", 1)),
-            (0, shape.get("height", 1)),
-            (0, 0),
-        ]
-        for idx, (x, y) in enumerate(points):
-            row = ET.SubElement(geom, ns("Row"), {"T": "MoveTo" if idx == 0 else "LineTo", "IX": str(idx)})
-            ET.SubElement(row, ns("Cell"), {"N": "X", "V": str(x)})
-            ET.SubElement(row, ns("Cell"), {"N": "Y", "V": str(y)})
-
-    return element
+    for connector in layout.get("connectors", []):
+        from_shape = shape_map.get(connector.get("from"))
+        to_shape = shape_map.get(connector.get("to"))
+        if not from_shape or not to_shape:
+            continue
+        connector_shape = Connect.create(page=page_obj, from_shape=from_shape, to_shape=to_shape)
+        if not connector_shape:
+            continue
+        connector_shape.line_color = visio_color(connector.get("color"))
+        connector_shape.line_weight = connector.get("line_weight", 0.04)
+        connector_shape.end_arrow = True
 
 
 
